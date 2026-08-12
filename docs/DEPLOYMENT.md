@@ -94,18 +94,40 @@ python -m unittest discover tests/
 
 ## Publishing to PyPI (Maintainers)
 
+Before publishing, bump the version in `pyproject.toml` and `src/unity_docs_mcp/__init__.py`
+(both must match). Then:
+
 ```bash
-# Update version in pyproject.toml and __init__.py
+# 1. Install build tooling
 pip install build twine
+
+# 2. Build the wheel + sdist
 python -m build
+
+# 3. Upload to PyPI (authenticates via your PyPI token / keyring)
 python -m twine upload dist/*
+
+# 4. Verify it's installable in a clean environment
+pip install unity-docs-mcp
 ```
+
+**Release checklist before `twine upload`:**
+- [ ] `python -m unittest discover tests/` green
+- [ ] `python -m build` succeeds (wheel + sdist)
+- [ ] No `requests` / `docs.unity3d.com` residue (`grep -r requests src/`)
+- [ ] Version bumped in both `pyproject.toml` and `__init__.py`
+- [ ] CHANGELOG entry added
 
 After publishing, users install with:
 
 ```bash
 pip install unity-docs-mcp
+unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
+
+(`pip install` provides the `unity-docs-mcp` command; `start` still locates your
+local editor docs and builds the index — that step is inherent to the offline
+design and can't be done at install time.)
 
 Note: the offline mode requires a locally installed Unity editor — there is no
 online fallback.
