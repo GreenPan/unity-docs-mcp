@@ -6,7 +6,7 @@ ClaudeでUnityのドキュメントに直接アクセスできるようにしま
 
 **⚠️ 免責事項**: これは非公式のコミュニティプロジェクトです。Unity Technologiesは本プロジェクトと提携しておらず、支援や承認も行っていません。
 
-[English README](README.md)
+[English README](README.md) · [中文版 README](README_zh.md)
 
 ## 仕組み
 

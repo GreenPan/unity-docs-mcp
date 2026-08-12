@@ -6,7 +6,7 @@ Provides Unity documentation access directly in Claude — **fully offline**, re
 
 **⚠️ Disclaimer**: This is an unofficial community project. Unity Technologies is not affiliated with and does not endorse or support this project.
 
-[日本語版 README](README_ja.md)
+[中文版 README](README_zh.md) · [日本語版 README](README_ja.md)
 
 ## How it works
 
