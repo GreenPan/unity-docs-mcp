@@ -16,20 +16,22 @@ The MCP server reads Unity's offline documentation that ships with every editor 
 
 ## Installation
 
-```bash
-# Once published to PyPI (see docs/DEPLOYMENT.md), install directly:
-pip install unity-docs-mcp
+> Once published to PyPI (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)), this is
+> the install for end users:
 
-# Until then, install from the source tree:
-pip install -e .
+```bash
+pip install unity-docs-mcp
 ```
 
-Both give you the `unity-docs-mcp` command. Next, run `start` to locate your
+This gives you the `unity-docs-mcp` command. Next, run `start` to locate your
 Unity editor docs, build the offline index, and write the MCP configs:
 
 ```bash
 unity-docs-mcp start
 ```
+
+(Developers working on the source tree use `pip install -e .` instead — see
+[Development](#development).)
 
 ### Step 1: Start (build index + configure AI tools)
 

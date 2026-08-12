@@ -16,19 +16,19 @@ ClaudeでUnityのドキュメントに直接アクセスできるようにしま
 
 ## インストール
 
-```bash
-# PyPI に公開後（docs/DEPLOYMENT.md 参照）は直接インストール:
-pip install unity-docs-mcp
+> PyPI に公開後（[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) 参照）、エンドユーザー向けのインストールはこれです：
 
-# それまではソースツリーからインストール:
-pip install -e .
+```bash
+pip install unity-docs-mcp
 ```
 
-どちらでも `unity-docs-mcp` コマンドが使えます。次に `start` を実行して、Unity エディタのドキュメントを特定し、オフラインインデックスを構築し、MCP 設定を書き込みます：
+これで `unity-docs-mcp` コマンドが使えます。次に `start` を実行して、Unity エディタのドキュメントを特定し、オフラインインデックスを構築し、MCP 設定を書き込みます：
 
 ```bash
 unity-docs-mcp start
 ```
+
+（ソースツリーで開発する場合のみ `pip install -e .` を使用 — [開発](#開発) 参照）
 
 ### ステップ 1: 開始（インデックス構築 + AI ツール設定）
 
