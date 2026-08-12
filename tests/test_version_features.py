@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unity_docs_mcp.server import UnityDocsMCPServer
+from unity_docs_mcp.search_index import UnitySearchIndex
 from unity_docs_mcp.scraper import UnityDocScraper
 from tests.helpers import make_fake_unity_install
 
@@ -119,31 +120,33 @@ class TestVersionFeatures(unittest.TestCase):
 
 
 class TestVersionDetection(unittest.TestCase):
-    """Local version detection (newest installed)."""
+    """Local version detection (the served version)."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.root, _ = make_fake_unity_install(
-            self.tmp, ["2022.3.45f1", "6000.5.7f1", "2023.2.0a1"]
+        self.root, _ = make_fake_unity_install(self.tmp, ["6000.5.7f1"])
+        self.docs_dir = os.path.join(
+            self.root, "6000.5.7f1", "Editor", "Data", "Documentation", "en"
         )
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_get_latest_version_newest_installed(self):
-        scraper = UnityDocScraper(editor_root=self.root)
+    def test_get_latest_version_served(self):
+        scraper = UnityDocScraper(docs_dir=self.docs_dir, version="6000.5.7f1")
         self.assertEqual(scraper.get_latest_version(), "6000.5.7f1")
         scraper.search_index.close()
 
-    def test_get_supported_versions_sorted(self):
-        scraper = UnityDocScraper(editor_root=self.root)
-        self.assertEqual(
-            scraper.get_supported_versions(), ["6000.5.7f1", "2023.2.0a1", "2022.3.45f1"]
-        )
+    def test_get_supported_versions_single(self):
+        scraper = UnityDocScraper(docs_dir=self.docs_dir, version="6000.5.7f1")
+        self.assertEqual(scraper.get_supported_versions(), ["6000.5.7f1"])
         scraper.search_index.close()
 
     def test_get_latest_version_no_install(self):
-        scraper = UnityDocScraper(editor_root="")
+        db_dir = os.path.join(self.tmp, "dbnone")
+        scraper = UnityDocScraper(
+            search_index=UnitySearchIndex(docs_dirs={}, db_dir=db_dir), db_dir=db_dir
+        )
         self.assertEqual(scraper.get_latest_version(), "")
         scraper.search_index.close()
 
@@ -152,10 +155,16 @@ class TestVersionFormatEdgeCases(unittest.TestCase):
     """normalize_version still reduces full versions to major.minor."""
 
     def setUp(self):
-        self.scraper = UnityDocScraper(editor_root="")
+        self.tmp = tempfile.mkdtemp()
+        db_dir = os.path.join(self.tmp, "db")
+        self.scraper = UnityDocScraper(
+            search_index=UnitySearchIndex(docs_dirs={}, db_dir=db_dir), db_dir=db_dir
+        )
 
     def tearDown(self):
         self.scraper.search_index.close()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_normalize_invalid_formats(self):
         test_cases = [

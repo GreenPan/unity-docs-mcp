@@ -12,32 +12,27 @@
 
 ## 工作原理
 
-MCP 服务器读取 Unity Hub 安装的每个编辑器自带的离线文档（`.../Editor/Data/Documentation/en/`）。不发起任何网络请求。每个已安装版本构建一次 SQLite FTS5 全文索引，可在 42,000+ 个脚本参考页面中进行快速的全文搜索。
+MCP 服务器读取 Unity Hub 安装的编辑器自带的离线文档（`.../Editor/Data/Documentation/en/`）。`unity-docs-mcp build` 把文档转换为每个已安装版本的 SQLite FTS5 全文索引（`~/.unity_docs_mcp/db/search_{version}.db`）。MCP 服务器只通过配置里的 env `UNITY_DOCS_VERSION` 提供**一个版本**的文档，并从构建好的数据库恢复文档目录。不发起任何网络请求。
 
 ## 安装
 
 ```bash
-pip install -e .
+pip install unity-docs-mcp
 ```
 
-### 第一步：启动（建库 + 配置 AI 工具）
+（PyPI 发布后即可用；源码树开发请用 `pip install -e .`，见[开发](#开发)）
+
+### 第一步：构建离线索引
 
 ```bash
-unity-docs-mcp start
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
 
-`start` 分两步：
+`build` 扫描 Hub Editor 目录，为每个已安装的 Unity 版本构建（或复用）SQLite FTS5 索引。首次需一两分钟，之后立即复用。加 `--force` 强制重建。**它不碰任何 IDE 配置** —— 服务器需要你手动配置（下一步）。
 
-1. **定位文档** —— 它会提示你输入 Unity Hub 的 Editor 目录（例如 `C:\Program Files\Unity\Hub\Editor`），也可以直接传入：
-   ```bash
-   unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
-   ```
-2. **构建搜索索引** —— 为每个已安装的 Unity 版本构建 SQLite FTS5 索引（首次需一两分钟，之后立即复用）。
-3. **写入 MCP 配置** —— 把服务器条目写入下方各 AI 工具的配置文件。
+### 第二步：把服务器手动添加到你的 IDE
 
-### 手动配置（不运行 `start`）
-
-如果你不想运行 `start`，而想手动配置 MCP 客户端，直接把服务器条目加到工具的配置文件即可。服务器命令始终相同：
+MCP 服务器是一个 stdio 命令。把它加到你的工具的 MCP 配置里，用 `UNITY_DOCS_VERSION` 指向你想服务的版本（`build` 已建索引的，可用 `ls ~/.unity_docs_mcp/db/` 查看）：
 
 ```json
 {
@@ -45,51 +40,39 @@ unity-docs-mcp start
     "unity-docs": {
       "command": "<path-to-python>",
       "args": ["-m", "unity_docs_mcp.server"],
-      "env": { "UNITY_HUB_EDITOR_DIR": "<Unity Hub Editor 目录>" }
+      "env": { "UNITY_DOCS_VERSION": "6000.5.7f1" }
     }
   }
 }
 ```
 
-其中：
-- `<path-to-python>` 是装有 `unity-docs-mcp` 的 Python 解释器（macOS/Linux 用 `which python` 查找，Windows 用 `where python`）。请使用完整绝对路径，避免 "module not found" 错误。
-- `<Unity Hub Editor 目录>` 是已安装编辑器文件夹的父目录，例如 `C:\Program Files\Unity\Hub\Editor`。也可以不写 `env` 块，改用环境变量 `UNITY_HUB_EDITOR_DIR` 指定。
+`<path-to-python>` 是装有 `unity-docs-mcp` 的 Python 解释器的**绝对路径**（macOS/Linux 用 `which python`，Windows 用 `where python`）。请使用完整绝对路径，避免 "module not found" 错误。
 
-然后放入你的客户端：
+各工具的配置位置：
 
-**Claude Code** —— 项目根目录下的 `.mcp.json`（顶层键 `mcpServers`）：
-```json
-{ "mcpServers": { "unity-docs": {
-  "command": "<path-to-python>", "args": ["-m", "unity_docs_mcp.server"],
-  "env": { "UNITY_HUB_EDITOR_DIR": "C:\\Program Files\\Unity\\Hub\\Editor" } } } }
-```
+- **Claude Code** —— 项目根目录下的 `.mcp.json`：
+  ```json
+  { "mcpServers": { "unity-docs": {
+    "command": "<path-to-python>", "args": ["-m", "unity_docs_mcp.server"],
+    "env": { "UNITY_DOCS_VERSION": "6000.5.7f1" } } } }
+  ```
+- **Claude Desktop** —— `%APPDATA%\Claude\claude_desktop_config.json`（Windows）或 `~/Library/Application Support/Claude/claude_desktop_config.json`（macOS），结构同上。
+- **Cursor** —— 项目根目录的 `.cursor/mcp.json`（`mcpServers` 键）。
+- **VS Code (Copilot)** —— 项目根目录的 `.vscode/mcp.json`（`servers` 键，并加 `"type": "stdio"`）。
+- **OpenCode** —— 项目根目录的 `opencode.json`（`mcp` 键，`"type": "local"`，`command` 为数组，用 `environment` 而非 `env`）。
+- **Codex** —— `~/.codex/config.toml` 的 `[mcp_servers.unity-docs]` 表。
 
-**Claude Desktop** —— `%APPDATA%\Claude\claude_desktop_config.json`（Windows）或
-`~/Library/Application Support/Claude/claude_desktop_config.json`（macOS），结构同上。
+编辑配置后重启对应 AI 工具。
 
-> **注意**：不运行 `start` 时，搜索索引会在**首次查询时延迟构建**（首次可能需几分钟，进度输出到 stderr）。先运行 `start` 会提前建好索引，并自动写入 Cursor、VS Code (Copilot)、OpenCode、Codex 的配置 —— 具体文件路径见 [docs/DETAILED_GUIDE.md](docs/DETAILED_GUIDE.md)。
+> **注意**：不运行 `build` 时，服务器仍可用 —— 首次查询时延迟构建索引（首次可能需几分钟，进度输出到 stderr）。先运行 `build` 只是提前建好。
 
-### 切换 Unity 安装目录
-
-如果换到不同的编辑器目录（新安装、换了盘符）：
-
-```bash
-unity-docs-mcp changesource --editor-root "D:\NewUnity\Hub\Editor"
-```
-
-`changesource` 会从新目录重建索引，并刷新所有工具配置。
-
-### 支持的 AI 工具
-
-`start` 会为以下工具写入 MCP 配置：**Claude Desktop**、**Claude Code**（`.mcp.json`）、**Cursor**、**VS Code (Copilot)**、**OpenCode**、**Codex**。
-
-用 `--tools` 选择子集：
+### 切换 Unity 版本 / 安装目录
 
 ```bash
-unity-docs-mcp start --tools claude-desktop,claude-code
+unity-docs-mcp build --editor-root "D:\NewUnity\Hub\Editor" --force
 ```
 
-可选工具名：`claude-desktop`, `claude-code`, `cursor`, `vscode`, `opencode`, `codex`。
+然后更新各工具配置里的 `UNITY_DOCS_VERSION` 为你想服务的版本。
 
 ## 使用
 
@@ -98,16 +81,16 @@ unity-docs-mcp start --tools claude-desktop,claude-code
 - "How do I use NavMeshAgent?"
 - "Search for transform methods"
 
-所有查询都会解析到你**已安装的 Unity 版本**。请求的版本未安装时，会回退到最新已安装版本并附加说明（例如 `6000.0 not installed; using 6000.5.7f1`）。
+所有查询都解析到你通过 `UNITY_DOCS_VERSION` 指向的**那一个版本**。
 
 ## 功能特性
 
 - 🚫 **完全离线** —— 读取本地 Unity 文档，无网络请求
 - 🔍 **全文搜索** —— FTS5 索引覆盖页面正文（ScriptReference API + Manual 手册）
 - 📖 **手册查询** —— `get_unity_manual_doc` 读取 Unity 手册页面或搜索手册
-- 🎯 **精确匹配已安装版本** —— 前缀匹配将 `6000.5` 解析为 `6000.5.7f1`；未安装版本回退到最新已安装并注明
-- 💾 **持久化索引** —— 每个版本构建一次，重启后复用
-- ⚙️ **一键设置** —— `start` 构建索引并接入全部 6 种 AI 工具
+- 🎯 **只服务单一版本** —— env `UNITY_DOCS_VERSION` 决定服务器读取哪个已建好的版本
+- 💾 **持久化索引** —— `build` 为每个版本建 FTS5 DB，重启后复用
+- 🛠️ **手动 IDE 配置** —— 每个工具加一条 stdio 条目，无自动配置魔法
 
 ## 开发
 

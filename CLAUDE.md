@@ -31,21 +31,22 @@ python run_tests.py
 # Run tests directly (no Inspector needed)
 source venv/bin/activate && python -m unittest discover tests/
 
-# Build the offline index + write MCP configs for AI tools
-unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
+# Build the offline index for installed Unity versions
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 
-# Switch to a different Unity install (rebuild index + refresh configs)
-unity-docs-mcp changesource --editor-root "D:\NewUnity\Hub\Editor"
+# Rebuild existing indexes
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor" --force
 ```
 
 **Running the Server**:
 ```bash
 # Via entry point (after installation) - starts the stdio MCP server
+# The server serves the version in env UNITY_DOCS_VERSION
 unity-docs-mcp
 # Output (stderr):
 # 🚀 Unity Docs MCP Server v0.3.0
 # 📚 Offline mode - reading local Unity installation docs
-# 📦 Installed Unity versions: 6000.5.7f1
+# 📦 Serving Unity version: 6000.5.7f1
 # 🔌 Starting MCP server...
 
 # Direct module execution
@@ -54,18 +55,18 @@ python -m unity_docs_mcp.server
 
 ### Architecture Overview
 
-The project consists of seven main modules that process local Unity documentation:
+The project consists of six main modules that process local Unity documentation:
 
 1. **server.py** - MCP server implementation providing 5 tools:
-   - `list_unity_versions` - Lists **installed** Unity versions
+   - `list_unity_versions` - Lists the **served** Unity version
    - `suggest_unity_classes` - Provides class name suggestions
-   - `get_unity_api_doc` - Reads API documentation for a resolved local version
-   - `search_unity_docs` - Searches local API docs (SQLite FTS5) in a specified version
+   - `get_unity_api_doc` - Reads API documentation for the served version
+   - `search_unity_docs` - Searches local API docs (SQLite FTS5)
    - `get_unity_manual_doc` - Reads a Manual page, or searches the Manual
 
 2. **scraper.py** - Local documentation reader (fully offline):
-   - Resolves editor root: arg > `UNITY_HUB_EDITOR_DIR` env > platform default
-   - Resolves versions against installed editors (prefix matching)
+   - Serves one built version chosen by the `UNITY_DOCS_VERSION` env var
+   - Recovers the docs dir from that version's db `meta.source_dir` (no editor scan)
    - Reads local HTML files (no network, no rate limiting)
    - Uses search_index.py for search and namespace resolution
 
@@ -82,39 +83,33 @@ The project consists of seven main modules that process local Unity documentatio
    - `pages.kind` distinguishes `api` vs `manual` rows; `search(kind=...)` filters
    - Search matches **page bodies** (stronger than Unity's title/description search)
    - Index auto-rebuilds when the docs source dir moves (`source_dir` in meta) or the schema is outdated
+   - `read_db_source_dir` / `list_built_versions` help the server recover a built version
 
 5. **version_resolver.py** - Version model for local installs:
-   - `parse_unity_version` / `discover_versions` / `resolve_version` / `default_editor_root`
+   - `parse_unity_version` / `discover_versions` (used by `build`) / `resolve_version` / `default_editor_root`
    - Full install dir names (`6000.5.7f1`) are the source of truth
-   - Prefix matching (`6000.5` → `6000.5.7f1`); uninstalled versions error
 
-6. **mcp_config.py** - Writes MCP configs for 6 AI tools:
-   - Claude Desktop, Claude Code (`.mcp.json`), Cursor, VS Code (Copilot),
-     OpenCode, Codex
-   - Read-merge-write JSON (preserves other entries, `.bak` backup); Codex TOML edited as text
-
-7. **cli.py** - Entry point: `start` (build index + write configs) / `changesource` (new dir → rebuild + refresh)
+6. **cli.py** - Entry point: `build` (build/reuse the FTS5 index per installed version; never writes IDE configs)
 
 ### Version-Specific Behavior
 
-**Important**: The MCP server handles **locally installed** Unity versions:
+**Important**: The MCP server serves **exactly one** locally built version:
 
 #### Version Resolution
-- **Fallback**: an uninstalled requested version (different major.minor) falls back to the newest installed, with a note like `6000.0 not installed; using 6000.5.7f1`
-- **Prefix matching**: `6000` / `6000.5` / `6000.5.7` all resolve to installed `6000.5.7f1`
-- **Newest default**: when no version specified, uses the newest installed
+- **Served version**: `UNITY_DOCS_VERSION` env var (e.g. `6000.5.7f1`); unset → newest built db
+- **Prefix matching**: `6000` / `6000.5` / `6000.5.7` resolve to the served `6000.5.7f1`
+- **Unserved fallback**: a requested version other than the served one falls back to it with a note like `6000.0 not installed; using 6000.5.7f1`
 - **No network**: there is no online version list and no "latest from Unity"
 
 #### Version Availability Information
-- **404 with context**: when an API is not found, shows which installed versions have it
-- **Local checking**: checks file existence per installed version (no HEAD requests)
-- **Helpful suggestions**: "Available in versions: 6000.5.7f1" for upgrade decisions
-- **No caching of version lists**: versions come from the local install each time
+- **404 with context**: when an API is not found, shows which versions have it
+- **Local checking**: checks file existence (no HEAD requests)
+- **No caching of version lists**: the served version comes from the config env / db each time
 
 #### Index/Docs Consistency
 - **source_dir recorded in meta**: each db remembers the docs dir it was built from
-- **Auto-rebuild on mismatch**: when the docs move, `ensure_index` rebuilds and warns to run `changesource`
-- **User control**: developers get docs for their exact installed Unity version; uninstalled requests degrade gracefully
+- **Auto-rebuild on mismatch**: when the docs move, `ensure_index` rebuilds and warns to run `build --force`
+- **User control**: developers serve their exact installed Unity version; unserved requests degrade gracefully
 
 ### Critical Implementation Details
 
@@ -131,7 +126,7 @@ The project consists of seven main modules that process local Unity documentatio
 - **UI elements**: "Leave feedback" → Remove with `_remove_unity_ui_elements()`
 - **Bold text**: `**text**` → Remove `<strong>`, `<b>` tags and markdown formatting
 - **Markdown links**: `[ComputeBuffer](ComputeBuffer.html)` → Strip with regex
-- **Local-only search**: docs come from the local install; `UNITY_HUB_EDITOR_DIR` points the server at the Hub Editor root
+- **Local-only search**: docs come from the local install; `UNITY_DOCS_VERSION` env points the server at the built version to serve
 
 ### Development Workflow
 
@@ -227,17 +222,15 @@ src/unity_docs_mcp/
 ├── scraper.py          # Local doc reader (offline)
 ├── parser.py           # HTML parsing and cleaning
 ├── search_index.py     # SQLite FTS5 search index
-├── version_resolver.py # Version discovery & resolution
-├── mcp_config.py       # Writes configs for 6 AI tools
-└── cli.py              # start / changesource commands
+├── version_resolver.py # Version parsing & resolution
+└── cli.py              # build command
 
 tests/
 ├── helpers.py                 # Fake Unity install fixture
 ├── test_version_resolver.py   # Version parsing/resolution
 ├── test_search_index.py       # FTS5 index build/search
 ├── test_scraper.py            # Local doc reader
-├── test_mcp_config.py         # Tool config writing
-├── test_cli.py                # start / changesource
+├── test_cli.py                # build command
 ├── test_server.py             # MCP server tests
 ├── test_integration.py        # End-to-end offline tests
 └── test_parser.py             # HTML parsing tests
@@ -255,8 +248,8 @@ source venv/bin/activate && python -m unittest discover tests/
 python tests/test_version_resolver.py  # Version resolution (22 tests)
 python tests/test_search_index.py      # FTS5 search index
 python tests/test_scraper.py           # Local doc reader
-python tests/test_mcp_config.py        # Tool config writing
-python tests/test_cli.py               # CLI start/changesource
+python tests/test_cli.py               # CLI build
+python tests/test_cache.py             # db helpers + API cache
 
 # Run with coverage
 python run_tests.py
@@ -264,24 +257,24 @@ python run_tests.py
 
 #### Test Coverage
 
-- **Version Resolution**: parsing, discovery, prefix matching, newest default
+- **Version Resolution**: parsing, discovery, prefix matching, served version
 - **FTS5 Index**: build, reuse, body-text search, index.js fallback
 - **Offline Scraper**: local reads, namespace resolution, availability by file existence
-- **Config Writing**: all 6 tools, merge preserves entries, .bak backups
-- **CLI**: start builds + writes, changesource refreshes, no-install non-zero
+- **db helpers**: `read_db_source_dir` / `list_built_versions`
+- **CLI**: `build` builds/reuses indexes, no-install non-zero
 - **Server Integration**: end-to-end offline workflow
 - **Zero Network**: all tests run against a fake local install (no Unity required)
 
-Total: **162 unit tests** ensuring robust offline functionality.
+Total: **148 unit tests** ensuring robust offline functionality.
 
 ### Performance & Storage
 
 The offline server persists a per-version SQLite FTS5 index:
 
 #### Index Storage
-- **Search Index DB**: `~/.unity_docs_mcp/db/search_{version}.db` per installed version
+- **Search Index DB**: `~/.unity_docs_mcp/db/search_{version}.db` per built version
 - **Lazy Build**: `ensure_index` validates meta, builds only when missing or stale
-- **Auto-Rebuild**: when the docs `source_dir` changes (changesource), the index rebuilds
+- **Auto-Rebuild**: when the docs `source_dir` changes, the index rebuilds
 - **Full-Text**: indexes page **bodies** for stronger search than Unity's own
 
 #### Index Benefits
@@ -304,7 +297,7 @@ The server displays helpful information on startup (via stderr, safe for MCP pro
 ```
 🚀 Unity Docs MCP Server v0.3.0          # From __init__.py __version__
 📚 Offline mode - reading local Unity installation docs
-📦 Installed Unity versions: 6000.5.7f1  # Discovered locally
+📦 Serving Unity version: 6000.5.7f1     # From UNITY_DOCS_VERSION / built db
 🔌 Starting MCP server...
 
 # When stopping with Ctrl+C (graceful shutdown):
@@ -315,8 +308,8 @@ The server displays helpful information on startup (via stderr, safe for MCP pro
 - **Graceful Shutdown**: Handles Ctrl+C (SIGINT) and SIGTERM signals cleanly
 - **No Stack Traces**: Signal trapping prevents ugly error output on exit
 - **Server Version**: Automatically reads from `src/unity_docs_mcp/__init__.py`
-- **Unity Versions**: discovered from the local install (no network)
-- **No Hardcoding**: version info updates automatically from the local Hub root
+- **Served Version**: from the `UNITY_DOCS_VERSION` env var, else newest built db
+- **No Hardcoding**: version info comes from the built dbs / config env
 
 ### Important Notes
 

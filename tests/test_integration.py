@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from unity_docs_mcp.server import UnityDocsMCPServer
 from unity_docs_mcp.search_index import UnitySearchIndex
 from unity_docs_mcp.scraper import UnityDocScraper
-from unity_docs_mcp.version_resolver import discover_versions
 from tests.helpers import make_fake_unity_install
 
 
@@ -25,12 +24,16 @@ class TestIntegration(unittest.TestCase):
         self.root, _ = make_fake_unity_install(
             self.tmp, ["2022.3.45f1", "6000.5.7f1"]
         )
-        versions = discover_versions(self.root)
+        docs_dir = os.path.join(
+            self.root, "6000.5.7f1", "Editor", "Data", "Documentation", "en"
+        )
         idx = UnitySearchIndex(
-            docs_dirs={v.name: v.docs_dir for v in versions},
+            docs_dirs={"6000.5.7f1": docs_dir},
             db_dir=os.path.join(self.tmp, "db"),
         )
-        self.scraper = UnityDocScraper(editor_root=self.root, search_index=idx)
+        self.scraper = UnityDocScraper(
+            docs_dir=docs_dir, version="6000.5.7f1", search_index=idx
+        )
         self.server = UnityDocsMCPServer()
         self.server.scraper = self.scraper
 
@@ -87,19 +90,18 @@ class TestIntegration(unittest.TestCase):
         content = result[0].text
         self.assertIn("Supported Unity Versions", content)
         self.assertIn("6000.5.7f1", content)
-        self.assertIn("2022.3.45f1", content)
+        self.assertNotIn("2022.3.45f1", content)  # single-version server
 
     async def test_suggest_classes(self):
         result = await self.server._suggest_unity_classes("game")
         self.assertIn("GameObject", result[0].text)
 
     async def test_no_install_graceful(self):
+        dbnone = os.path.join(self.tmp, "dbnone")
         server = UnityDocsMCPServer()
         server.scraper = UnityDocScraper(
-            editor_root="",
-            search_index=UnitySearchIndex(
-                docs_dirs={}, db_dir=os.path.join(self.tmp, "dbnone")
-            ),
+            search_index=UnitySearchIndex(docs_dirs={}, db_dir=dbnone),
+            db_dir=dbnone,
         )
         result = await server._get_unity_api_doc("GameObject")
         self.assertIn("No local Unity documentation found", result[0].text)

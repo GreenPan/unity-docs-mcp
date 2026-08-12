@@ -9,30 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Fully offline mode** — reads documentation bundled with locally installed Unity editors; no network requests
-- **`unity-docs-mcp start`** — two-step setup: locate the editor directory, build the SQLite FTS5 search index, then write MCP configs
-- **`unity-docs-mcp changesource`** — switch editor directory: rebuild index from the new location and refresh all configs
+- **`unity-docs-mcp build`** — builds (or reuses) the SQLite FTS5 index per installed version; never touches IDE configs
+- **`UNITY_DOCS_VERSION` env var** — the server serves exactly one built version, recovering its docs dir from the db `meta.source_dir`
+- **db helpers** — `read_db_source_dir` / `list_built_versions` for recovering a built version
 - **SQLite FTS5 full-text index** — per-version persistent index (`~/.unity_docs_mcp/db/search_{version}.db`) over page bodies, not just titles/descriptions
-- **Manual handbook indexing** — the `Manual/` tree (~3,500 pages) is now indexed alongside the ScriptReference API reference (a `kind` column distinguishes `api` / `manual`)
+- **Manual handbook indexing** — the `Manual/` tree (~3,500 pages) is indexed alongside the ScriptReference API reference (a `kind` column distinguishes `api` / `manual`)
 - **`get_unity_manual_doc` tool** — the 5th MCP tool: reads a Manual page by slug/title, or falls back to a Manual search
-- **Config writing for 6 AI tools** — Claude Desktop, Claude Code (`.mcp.json`), Cursor, VS Code (Copilot), OpenCode, and Codex
-- `UNITY_HUB_EDITOR_DIR` environment variable to point the server at the editor root
-- Local version resolution: prefix matching (`6000.5` → `6000.5.7f1`), uninstalled versions fall back to the newest installed with a note
+- Per-IDE **manual configuration** documented in the README (Claude Desktop, Claude Code, Cursor, VS Code, OpenCode, Codex)
 
 ### Changed
 - Search index backend: in-memory JS index + Python scoring → SQLite FTS5 with BM25
-- Version model: online supported-version list → locally installed full version dirs
-- **Uninstalled requested version now falls back** to the newest installed version
-  with a note (`6000.0 not installed; using 6000.5.7f1`) instead of erroring.
-  The server's only hard error is when no local docs exist at all.
+- Version model: online supported-version list → locally built per-version dbs; the server serves one (`UNITY_DOCS_VERSION`)
+- **`start` → `build`** — the CLI now only builds the index; IDE config is manual
+- **Unserved requested version falls back** to the served version with a note
+  (`6000.0 not installed; using 6000.5.7f1`) instead of erroring.
 - **Improved member_type detection** — `Object.GetInstanceID` is now `method`,
   `Object.transform` is `property`, `AI.NavMeshAgent` is `class` (based on whether
   the dotted base is a known class), instead of over-classifying dotted members
-- `config.json` is now a manual-config reference (automatic setup uses `start`)
+- `config.json` is now a manual-config reference
 - Dropped the `requests` dependency
 
 ### Removed
+- **Auto-config writing** — `mcp_config.py` and the `start`/`changesource` commands are gone; each IDE is configured by hand (README)
 - All web scraping code paths (`requests` session, rate limiting, `docs.unity3d.com` URL building, online version detection)
-- The separate index-build command (build is embedded in `start` / `changesource`)
+- `UNITY_HUB_EDITOR_DIR` env var (replaced by `UNITY_DOCS_VERSION`)
 
 ### Fixed
 - Search results return local absolute paths instead of remote URLs

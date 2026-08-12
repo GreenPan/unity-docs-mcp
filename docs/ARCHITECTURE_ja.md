@@ -7,9 +7,9 @@
 **主な機能**:
 - ローカルディスクから Unity API ドキュメントを読み取り（クラス、メソッド）
 - 全文ドキュメント検索（ページ本文も対象の SQLite FTS5）
-- インストール済み Unity バージョンへの正確な一致
+- サービス対象バージョンへの正確一致
 - クリーンなテキスト出力（UI要素、フォーマット除去）
-- ワンコマンドセットアップ（`start`）でインデックス構築と 6 ツール設定を一括実行
+- `build` CLI でローカルドキュメントをオフラインインデックス化、IDE は手動設定
 
 ## 🏗️ アーキテクチャ
 
@@ -22,9 +22,8 @@ unity-docs-mcp/
 │   ├── scraper.py            # ローカルドキュメント読み取り (UnityDocScraper)
 │   ├── parser.py             # HTML解析&クリーニング (UnityDocParser)
 │   ├── search_index.py       # SQLite FTS5 検索インデックス (UnitySearchIndex)
-│   ├── version_resolver.py   # バージョン検出・解決
-│   ├── mcp_config.py         # AIツールの設定書き込み
-│   └── cli.py                # `unity-docs-mcp start` / `changesource`
+│   ├── version_resolver.py   # バージョン解析・解決
+│   └── cli.py                # `unity-docs-mcp build`
 ├── tests/
 │   ├── test_*.py             # ユニットテスト
 │   └── helpers.py            # フェイクUnityインストールのfixture
@@ -34,7 +33,7 @@ unity-docs-mcp/
 
 ### 実行時データ
 ```
-~/.unity_docs_mcp/db/search_{version}.db   # インストール済みバージョンごとのSQLite FTS5インデックス
+~/.unity_docs_mcp/db/search_{version}.db   # ビルド済みバージョンごとのSQLite FTS5インデックス
 ```
 
 ### コアコンポーネント
@@ -43,19 +42,19 @@ unity-docs-mcp/
 ```python
 class UnityDocsMCPServer:
     # MCPツール:
-    - list_unity_versions()      # インストール済みUnityバージョン
+    - list_unity_versions()      # サービス対象バージョン
     - suggest_unity_classes()    # クラス名提案
     - get_unity_api_doc()       # APIドキュメント取得
     - search_unity_docs()       # APIリファレンス検索（kind='api'）
     - get_unity_manual_doc()    # マニュアルページの読み取り/検索
 ```
-バージョンは `scraper.resolve_version()` で解決（前方一致）。未インストールのリクエストバージョンは最新のインストール済みにフォールバックして注記を付与します（`6000.0 not installed; using 6000.5.7f1`）。`**Source:**` はローカルの絶対パス。
+サーバーは `UNITY_DOCS_VERSION` 環境変数で選ばれた**1 つのビルド済みバージョン**だけを提供します。scraper はそのバージョンの db `meta.source_dir` からドキュメントディレクトリを復元します。サービス対象以外のリクエストバージョンは注記付きでフォールバック（`6000.0 not installed; using 6000.5.7f1`）。`**Source:**` はローカルの絶対パス。
 
 #### 2. **scraper.py** - ローカルドキュメントリーダー
 ```python
 class UnityDocScraper:
-    # editor_root 解決: 引数 > UNITY_HUB_EDITOR_DIR 環境変数 > デフォルトHubパス
-    - resolve_version(version)         # None -> 最新、前方一致
+    # 単一バージョン: docs_dir はビルド済み db から UNITY_DOCS_VERSION で復元
+    - resolve_version(version)         # None -> サービス対象、前方一致
     - get_api_doc(class, method, version)
     - search_docs(query, version)      # search_index(kind='api') に委譲
     - get_manual_doc(page_query, version)  # ページ直接解決、なければManual検索
@@ -100,41 +99,29 @@ class UnitySearchIndex:
 `member_type` はハイフン/ドット命名規則と、ドットの基底が既知クラスかどうかで
 class / method / property / constructor を判定します
 （例：`Object.GetInstanceID` → method、`AI.NavMeshAgent` → class）。
-インデックスは遅延ビルド（`ensure_index`）し、`start`/`changesource` で明示的にトリガー。
+インデックスは遅延ビルド（`ensure_index`）し、`build` で明示的にトリガー。
 meta の `source_dir` 不一致またはスキーマ更新（`kind` 列なし）で自動再ビルド。
+
+サーバーがビルド済みバージョンのドキュメントを復元するためのモジュール関数:
+- `read_db_source_dir(db_dir, version)` → バージョン db の `meta.source_dir`
+- `list_built_versions(db_dir)` → ビルド済み db があるバージョン（新しい順）
 
 #### 5. **version_resolver.py** - バージョンモデル
 ```python
 @dataclass InstalledVersion: name, editor_dir, docs_dir, version_key
 parse_unity_version("6000.5.7f1") -> (6000, 5, 7, type_rank, build, revision)
-discover_versions(editor_root)     # Hub Editorディレクトリを走査、新しい順
-resolve_version(version, installed) # None->最新、完全一致、前方一致、それ以外はNone
+discover_versions(editor_root)     # Hub Editorディレクトリを走査（`build` で使用）
+resolve_version(version, installed) # None->サービス対象、完全一致、前方一致、それ以外はNone
 default_editor_root()              # プラットフォーム既定のHubパス
 ```
-異なる major.minor バージョンで未インストールの場合は、エラーにするのではなく最新のインストール済みにフォールバックし注記を付与します。
+`build` は `discover_versions` で何をインデックス化するか決定します。サーバーは単一の `InstalledVersion`（`UNITY_DOCS_VERSION` で選ばれたもの）だけを提供します。
 
-#### 6. **mcp_config.py** - ツール設定
-```python
-write_all(editor_root, python_exe, project_dir, tools) -> {tool: status}
-```
-同一の stdio サーバーエントリ（`command` = venv の python、`args = ["-m", "unity_docs_mcp.server"]`、`env = {"UNITY_HUB_EDITOR_DIR": editor_root}`）を以下に書き込みます:
-
-| ツール | 設定ファイル | キー |
-|---|---|---|
-| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
-| Claude Code | `{project}/.mcp.json` | `mcpServers` |
-| Cursor | `{project}/.cursor/mcp.json` | `mcpServers` |
-| VS Code (Copilot) | `{project}/.vscode/mcp.json` | `servers` (`type: stdio`) |
-| OpenCode | `{project}/opencode.json` | `mcp` (`type: local`、command配列) |
-| Codex | `~/.codex/config.toml` | `[mcp_servers.unity-docs]` |
-
-JSON設定は読み込み→マージ→書き込み（他エントリ保持、`.bak` バックアップ）。Codex の TOML はテキスト編集し、既存テーブルを保護します。
-
-#### 7. **cli.py** - コマンド
+#### 6. **cli.py** - コマンド
 ```bash
-unity-docs-mcp start          # エディタ特定 -> インデックス構築 -> 設定書き込み
-unity-docs-mcp changesource   # 新しいエディタ -> インデックス再構築 -> 設定更新
+unity-docs-mcp build --editor-root <hub>   # インストール済みバージョンごとにインデックス構築（または再利用）
+                     [--force]             # 既存インデックスを再構築
 ```
+`build` は IDE 設定には一切触れません。サーバーは各ツールの MCP 設定に手動で追加します（`command` = venv の python、`args = ["-m", "unity_docs_mcp.server"]`、`env = {"UNITY_DOCS_VERSION": "<バージョン>"}`）— ツールごとのファイル場所は README / DETAILED_GUIDE を参照（Claude Desktop、Claude Code、Cursor、VS Code、OpenCode、Codex）。
 
 ## 🔧 主要な依存関係
 
@@ -183,9 +170,9 @@ for link in soup.find_all('a'):
 
 ## 🚀 起動とテスト
 
-### インデックス構築 + ツール設定
+### インデックス構築
 ```bash
-unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
 
 ### MCP Inspector
@@ -219,7 +206,7 @@ python -m unittest discover tests/
 
 ## 💡 重要な洞察
 
-1. **完全オフライン** — データソースはローカルインストール。`UNITY_HUB_EDITOR_DIR` でサーバーに Hub Editor ルートを指定。
+1. **完全オフライン** — データソースはローカルインストール。サーバーは `UNITY_DOCS_VERSION` で選ばれたビルド済みバージョンを提供し、docs ディレクトリは db の `meta.source_dir` から復元。
 2. **FTS5 全文インデックス** — タイトルだけでなく**本文**も検索対象。インデックスは `~/.unity_docs_mcp/db/` に保存。
 3. **遅延ビルド** — `ensure_index` が `meta` テーブルを検証し、存在しないか古い（`source_dir` 不一致）場合のみビルド。
 4. **バージョンモデル** — 完全なインストールディレクトリ名（`6000.5.7f1`）が基準。前方一致で解決し、未インストール版はエラー。
@@ -249,6 +236,6 @@ python -m unittest discover tests/
 - **パーサー/クリーナー**: `src/unity_docs_mcp/parser.py`
 - **検索インデックス**: `src/unity_docs_mcp/search_index.py`
 - **バージョン解決**: `src/unity_docs_mcp/version_resolver.py`
-- **設定書き込み**: `src/unity_docs_mcp/mcp_config.py`
+- **CLI**: `src/unity_docs_mcp/cli.py`
 - **CLI**: `src/unity_docs_mcp/cli.py`
 - **インデックスDB**: `~/.unity_docs_mcp/db/`

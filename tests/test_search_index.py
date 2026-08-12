@@ -351,5 +351,40 @@ class TestGetManualPage(unittest.TestCase):
         self.assertIsNone(UnitySearchIndex().get_manual_page("urp"))
 
 
+class TestDbHelpers(unittest.TestCase):
+    def test_read_db_source_dir(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            root, _ = make_fake_unity_install(tmp, ["6000.5.7f1"])
+            docs_dir = os.path.join(
+                root, "6000.5.7f1", "Editor", "Data", "Documentation", "en"
+            )
+            db_dir = os.path.join(tmp, "db")
+            idx = UnitySearchIndex(
+                docs_dirs={"6000.5.7f1": docs_dir}, db_dir=db_dir
+            )
+            self.assertTrue(idx.build_index("6000.5.7f1"))
+            from unity_docs_mcp.search_index import (
+                read_db_source_dir,
+                list_built_versions,
+            )
+
+            self.assertEqual(read_db_source_dir(db_dir, "6000.5.7f1"), docs_dir)
+            self.assertEqual(list_built_versions(db_dir), ["6000.5.7f1"])
+            idx.close()
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_read_db_source_dir_missing(self):
+        from unity_docs_mcp.search_index import read_db_source_dir
+
+        self.assertIsNone(read_db_source_dir("/nonexistent", "6000.5.7f1"))
+
+    def test_list_built_versions_missing_dir(self):
+        from unity_docs_mcp.search_index import list_built_versions
+
+        self.assertEqual(list_built_versions("/nonexistent"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

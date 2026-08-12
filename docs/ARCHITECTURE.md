@@ -7,9 +7,9 @@
 **Key Features**:
 - Read Unity API documentation (classes, methods) from local disk
 - Full-text document search (SQLite FTS5 over page bodies)
-- Exact matching against installed Unity versions
+- Exact matching against the served Unity version
 - Clean text output (UI elements and formatting removed)
-- One-command setup (`start`) that builds the index and wires up 6 AI tools
+- `build` CLI that turns local docs into an offline index; manual IDE config
 
 ## 🏗️ Architecture
 
@@ -22,9 +22,8 @@ unity-docs-mcp/
 │   ├── scraper.py            # Local doc reader (UnityDocScraper)
 │   ├── parser.py             # HTML parsing & cleaning (UnityDocParser)
 │   ├── search_index.py       # SQLite FTS5 search index (UnitySearchIndex)
-│   ├── version_resolver.py   # Version discovery & resolution
-│   ├── mcp_config.py         # Writes configs for AI tools
-│   └── cli.py                # `unity-docs-mcp start` / `changesource`
+│   ├── version_resolver.py   # Version parsing & resolution
+│   └── cli.py                # `unity-docs-mcp build`
 ├── tests/
 │   ├── test_*.py             # Unit tests
 │   └── helpers.py            # Fake Unity install fixture
@@ -34,7 +33,7 @@ unity-docs-mcp/
 
 ### Runtime Data
 ```
-~/.unity_docs_mcp/db/search_{version}.db   # SQLite FTS5 index per installed version
+~/.unity_docs_mcp/db/search_{version}.db   # SQLite FTS5 index per built version
 ```
 
 ### Core Components
@@ -43,21 +42,23 @@ unity-docs-mcp/
 ```python
 class UnityDocsMCPServer:
     # MCP tools:
-    - list_unity_versions()      # Installed Unity versions
+    - list_unity_versions()      # The served version
     - suggest_unity_classes()    # Class name suggestions
     - get_unity_api_doc()       # Get API documentation
     - search_unity_docs()       # Search the API reference (kind='api')
     - get_unity_manual_doc()    # Read/search a Manual page
 ```
-Versions are resolved via `scraper.resolve_version()`. An uninstalled requested
-version falls back to the newest installed with a note (`6000.0 not installed;
-using 6000.5.7f1`); the `**Source:**` field is a local absolute path.
+The server serves exactly one built version, chosen by the `UNITY_DOCS_VERSION`
+env var. The scraper recovers the docs directory from that version's db
+`meta.source_dir`. A requested version other than the served one falls back to
+it with a note (`6000.0 not installed; using 6000.5.7f1`); the `**Source:**`
+field is a local absolute path.
 
 #### 2. **scraper.py** - Local Documentation Reader
 ```python
 class UnityDocScraper:
-    # editor_root resolution: arg > UNITY_HUB_EDITOR_DIR env > default Hub path
-    - resolve_version(version)         # None -> newest; prefix match
+    # Single-version: docs_dir recovered from the built db for UNITY_DOCS_VERSION
+    - resolve_version(version)         # None -> served version; prefix match
     - get_api_doc(class, method, version)
     - search_docs(query, version)      # delegates to search_index(kind='api')
     - get_manual_doc(page_query, version)  # exact page, else Manual search
@@ -102,43 +103,35 @@ class UnitySearchIndex:
 `member_type` distinguishes class / method / property / constructor via the
 hyphen/dot naming rules plus whether the dotted base is a known class
 (e.g. `Object.GetInstanceID` → method, `AI.NavMeshAgent` → class). Indexing is
-lazy (`ensure_index` on first query) and explicitly triggered by `start`/`changesource`.
+lazy (`ensure_index` on first query) and explicitly triggered by `build`.
 The db is rebuilt automatically when the `source_dir` in meta no longer matches
 or the schema is outdated (no `kind` column).
+
+Module-level helpers used by the server to recover a built version's docs:
+- `read_db_source_dir(db_dir, version)` → the `meta.source_dir` from a version's db
+- `list_built_versions(db_dir)` → versions with a built db, newest first
 
 #### 5. **version_resolver.py** - Version Model
 ```python
 @dataclass InstalledVersion: name, editor_dir, docs_dir, version_key
 parse_unity_version("6000.5.7f1") -> (6000, 5, 7, type_rank, build, revision)
-discover_versions(editor_root)     # scans Hub Editor dir, newest first
-resolve_version(version, installed) # None->newest, exact, prefix, else None
+discover_versions(editor_root)     # scans Hub Editor dir (used by `build`)
+resolve_version(version, installed) # None->served, exact, prefix, else None
 default_editor_root()              # platform default Hub path
 ```
-Different major.minor versions that aren't installed fall back to the newest
-installed version (with a note) rather than erroring.
+`build` uses `discover_versions` to find what to index. The server serves a
+single `InstalledVersion` (the one from `UNITY_DOCS_VERSION`).
 
-#### 6. **mcp_config.py** - Tool Configuration
-```python
-write_all(editor_root, python_exe, project_dir, tools) -> {tool: status}
-```
-Writes the same stdio server entry (`command` = venv python, `args = ["-m", "unity_docs_mcp.server"]`, `env = {"UNITY_HUB_EDITOR_DIR": editor_root}`) into:
-
-| Tool | Config file | Key |
-|---|---|---|
-| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
-| Claude Code | `{project}/.mcp.json` | `mcpServers` |
-| Cursor | `{project}/.cursor/mcp.json` | `mcpServers` |
-| VS Code (Copilot) | `{project}/.vscode/mcp.json` | `servers` (`type: stdio`) |
-| OpenCode | `{project}/opencode.json` | `mcp` (`type: local`, array command) |
-| Codex | `~/.codex/config.toml` | `[mcp_servers.unity-docs]` |
-
-JSON configs are read-merge-written (other entries preserved, `.bak` backup). Codex TOML is edited as text so existing tables survive.
-
-#### 7. **cli.py** - Commands
+#### 6. **cli.py** - Commands
 ```bash
-unity-docs-mcp start          # locate editor -> build index -> write configs
-unity-docs-mcp changesource   # new editor -> rebuild index -> refresh configs
+unity-docs-mcp build --editor-root <hub>   # build (or reuse) index per installed version
+                     [--force]             # rebuild existing indexes
 ```
+`build` never touches IDE configs. The server is configured manually in each
+tool's MCP config (`command` = venv python, `args = ["-m", "unity_docs_mcp.server"]`,
+`env = {"UNITY_DOCS_VERSION": "<version>"}`) — see README / DETAILED_GUIDE for
+per-tool file locations (Claude Desktop, Claude Code, Cursor, VS Code, OpenCode,
+Codex).
 
 ## 🔧 Key Dependencies
 
@@ -187,9 +180,9 @@ Remove leftover `[text](url)` with regex.
 
 ## 🚀 Launch & Test
 
-### Build index + configure tools
+### Build index
 ```bash
-unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
 
 ### MCP Inspector
@@ -200,7 +193,7 @@ unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
 
 ### Test Examples
 ```json
-// Get GameObject documentation (latest installed version)
+// Get GameObject documentation (served version)
 {"class_name": "GameObject"}
 
 // Get specific method with prefix version
@@ -212,7 +205,7 @@ unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
 // Get class suggestions
 {"partial_name": "game"}
 
-// Uninstalled version -> falls back to newest installed with a note
+// Unserved version -> falls back to the served version with a note
 {"class_name": "AsyncGPUReadback", "version": "6000.0"}
 ```
 
@@ -223,11 +216,11 @@ python -m unittest discover tests/
 
 ## 💡 Critical Insights
 
-1. **Fully offline** — data source is the local install, not the network. `UNITY_HUB_EDITOR_DIR` points the server at the Hub Editor root.
+1. **Fully offline** — data source is the local install, not the network. The server serves one built version chosen by `UNITY_DOCS_VERSION`; docs dir is recovered from the db's `meta.source_dir`.
 2. **FTS5 full-text index** — searches match page **bodies**, not just titles/descriptions. Indexes live in `~/.unity_docs_mcp/db/`.
 3. **Lazy build** — `ensure_index` validates the `meta` table and builds only when missing or stale (`source_dir` mismatch).
-4. **Version model** — full install dirs (`6000.5.7f1`) are the source of truth; prefix matching resolves user input; uninstalled versions error.
-5. **Config safety** — read-merge-write preserves other entries, `.bak` backups, Codex TOML edited as text.
+4. **Version model** — full install dirs (`6000.5.7f1`) are the source of truth; `build` indexes them, and the server serves exactly one.
+5. **Manual config** — no auto-config; each tool gets one stdio entry with `env.UNITY_DOCS_VERSION`.
 6. **Windows paths** — search-result `path` uses forward slashes (`as_posix()`); file reads use `normpath`.
 
 ## 📝 Future Improvements
@@ -253,6 +246,5 @@ python -m unittest discover tests/
 - **Parser/cleaner**: `src/unity_docs_mcp/parser.py`
 - **Search index**: `src/unity_docs_mcp/search_index.py`
 - **Version resolution**: `src/unity_docs_mcp/version_resolver.py`
-- **Config writer**: `src/unity_docs_mcp/mcp_config.py`
 - **CLI**: `src/unity_docs_mcp/cli.py`
 - **Index databases**: `~/.unity_docs_mcp/db/`

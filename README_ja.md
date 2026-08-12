@@ -12,7 +12,7 @@ ClaudeでUnityのドキュメントに直接アクセスできるようにしま
 
 ## 仕組み
 
-この MCP サーバーは、Unity Hub でインストールされた各エディタに同梱のオフラインドキュメント（`.../Editor/Data/Documentation/en/`）を読み取ります。ネットワーク通信は一切行いません。SQLite FTS5 全文検索インデックスをバージョンごとに一度だけ構築し、42,000 ページ以上の ScriptReference 全体を高速に全文検索できます。
+この MCP サーバーは、Unity Hub でインストールされたエディタに同梱のオフラインドキュメント（`.../Editor/Data/Documentation/en/`）を読み取ります。`unity-docs-mcp build` がドキュメントをバージョンごとの SQLite FTS5 全文インデックス（`~/.unity_docs_mcp/db/search_{version}.db`）に変換します。MCP サーバーは設定ファイルの env `UNITY_DOCS_VERSION` で指定された**1 つのバージョン**だけを提供し、ドキュメントディレクトリはビルド済み DB から復元します。ネットワーク通信は一切行いません。
 
 ## インストール
 
@@ -22,32 +22,19 @@ ClaudeでUnityのドキュメントに直接アクセスできるようにしま
 pip install unity-docs-mcp
 ```
 
-これで `unity-docs-mcp` コマンドが使えます。次に `start` を実行して、Unity エディタのドキュメントを特定し、オフラインインデックスを構築し、MCP 設定を書き込みます：
+これで `unity-docs-mcp` コマンドが使えます。（ソースツリーで開発する場合のみ `pip install -e .` を使用 — [開発](#開発) 参照）
+
+### ステップ 1: オフラインインデックスを構築
 
 ```bash
-unity-docs-mcp start
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
 
-（ソースツリーで開発する場合のみ `pip install -e .` を使用 — [開発](#開発) 参照）
+`build` は Hub Editor ディレクトリを走査し、インストール済みの各 Unity バージョンについて SQLite FTS5 インデックスを構築（または再利用）します。初回は数分かかります。`--force` で再構築。**IDE 設定には一切触れません** — サーバーは次の手順で手動設定します。
 
-### ステップ 1: 開始（インデックス構築 + AI ツール設定）
+### ステップ 2: サーバーを IDE に手動追加
 
-```bash
-unity-docs-mcp start
-```
-
-`start` は以下の手順を実行します：
-
-1. **ドキュメントの場所を指定** — Unity Hub の Editor ディレクトリ（例：`C:\Program Files\Unity\Hub\Editor`）を入力するか、直接渡します：
-   ```bash
-   unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
-   ```
-2. **検索インデックスを構築** — インストール済みの各 Unity バージョンについて SQLite FTS5 インデックスを構築します（初回は数分かかります。以降は即座に再利用されます）。
-3. **MCP 設定を書き込み** — 対応する各 AI ツールの設定ファイルに MCP サーバーエントリを書き込みます。
-
-### 手動設定（`start` を使わない場合）
-
-`start` を実行せずに MCP クライアントへ手動で設定する場合は、サーバーエントリを直接追加します。サーバーコマンドは常に同じです：
+MCP サーバーは stdio コマンドです。`UNITY_DOCS_VERSION` に提供したいバージョン（`build` がインデックス化したもの）を指定して、各ツールの MCP 設定に追加します：
 
 ```json
 {
@@ -55,48 +42,39 @@ unity-docs-mcp start
     "unity-docs": {
       "command": "<pythonへのパス>",
       "args": ["-m", "unity_docs_mcp.server"],
-      "env": { "UNITY_HUB_EDITOR_DIR": "<Unity Hub Editorディレクトリ>" }
+      "env": { "UNITY_DOCS_VERSION": "6000.5.7f1" }
     }
   }
 }
 ```
 
-- `<pythonへのパス>`：`unity-docs-mcp` がインストールされている Python インタプリタの**絶対パス**（macOS/Linux は `which python`、Windows は `where python` で確認）。「module not found」エラーを避けるため絶対パスを使います。
-- `<Unity Hub Editorディレクトリ>`：インストール済みエディタフォルダの親ディレクトリ（例：`C:\Program Files\Unity\Hub\Editor`）。`env` ブロックを省略し、環境変数 `UNITY_HUB_EDITOR_DIR` で指定しても構いません。
+`<pythonへのパス>` は `unity-docs-mcp` がインストールされている Python インタプリタの**絶対パス**（macOS/Linux は `which python`、Windows は `where python` で確認）。「module not found」エラーを避けるため絶対パスを使います。
 
-**Claude Code** — プロジェクト直下の `.mcp.json`（トップレベルキー `mcpServers`）：
-```json
-{ "mcpServers": { "unity-docs": {
-  "command": "<pythonへのパス>", "args": ["-m", "unity_docs_mcp.server"],
-  "env": { "UNITY_HUB_EDITOR_DIR": "C:\\Program Files\\Unity\\Hub\\Editor" } } } }
-```
+各ツールの設定場所：
 
-**Claude Desktop** — `%APPDATA%\Claude\claude_desktop_config.json`（Windows）または
-`~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）に、同じ `mcpServers` 形式で追加。
+- **Claude Code** — プロジェクト直下の `.mcp.json`：
+  ```json
+  { "mcpServers": { "unity-docs": {
+    "command": "<pythonへのパス>", "args": ["-m", "unity_docs_mcp.server"],
+    "env": { "UNITY_DOCS_VERSION": "6000.5.7f1" } } } }
+  ```
+- **Claude Desktop** — `%APPDATA%\Claude\claude_desktop_config.json`（Windows）または `~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）に、同じ `mcpServers` 形式。
+- **Cursor** — プロジェクトの `.cursor/mcp.json`（`mcpServers` キー）。
+- **VS Code (Copilot)** — プロジェクトの `.vscode/mcp.json`（`servers` キー、`"type": "stdio"` も追加）。
+- **OpenCode** — プロジェクトの `opencode.json`（`mcp` キー、`"type": "local"`、`command` は配列、`env` ではなく `environment`）。
+- **Codex** — `~/.codex/config.toml` の `[mcp_servers.unity-docs]` テーブル。
 
-> **注意**: `start` を実行しない場合、検索インデックスは**初回クエリ時に遅延ビルド**されます（初回は数分かかり、進捗は stderr に出力）。`start` を先に実行するとインデックスを事前に構築し、Cursor / VS Code (Copilot) / OpenCode / Codex の設定も自動で書き込みます — 正確なファイルパスは [docs/DETAILED_GUIDE.md](docs/DETAILED_GUIDE.md) を参照。
+設定編集後は AI ツールを再起動してください。
 
-### Unity のインストール先を変更した場合
+> **注意**: `build` を省略してもサーバーは動作します — 初回クエリ時にインデックスを遅延ビルドします（初回は数分、進捗は stderr に出力）。`build` を先に実行すれば事前に構築されます。
 
-別のエディタディレクトリ（新しいインストールや別ドライブなど）に移動した場合：
-
-```bash
-unity-docs-mcp changesource --editor-root "D:\NewUnity\Hub\Editor"
-```
-
-`changesource` は新しいディレクトリからインデックスを再構築し、すべてのツール設定を更新します。
-
-### 対応 AI ツール
-
-`start` は以下の設定を書き込みます：**Claude Desktop**、**Claude Code**（`.mcp.json`）、**Cursor**、**VS Code (Copilot)**、**OpenCode**、**Codex**。
-
-`--tools` で絞り込めます：
+### Unity のバージョン / インストール先を変更した場合
 
 ```bash
-unity-docs-mcp start --tools claude-desktop,claude-code
+unity-docs-mcp build --editor-root "D:\NewUnity\Hub\Editor" --force
 ```
 
-指定できるツール名：`claude-desktop`, `claude-code`, `cursor`, `vscode`, `opencode`, `codex`。
+その後、各ツール設定の `UNITY_DOCS_VERSION` を提供したいバージョンに更新します。
 
 ## 使い方
 
@@ -105,16 +83,16 @@ ClaudeにUnity APIについて質問してください：
 - 「NavMeshAgentの使い方は？」
 - 「transformメソッドを検索して」
 
-すべての参照は**インストール済みの Unity バージョン**に解決されます。未インストールのバージョンを指定すると、最新のインストール済みにフォールバックし、注記を付与します（例：`6000.0 not installed; using 6000.5.7f1`）。
+すべての参照は、サーバーが提供する**1 つのバージョン**（`UNITY_DOCS_VERSION` で指定）に解決されます。
 
 ## 機能
 
 - 🚫 **完全オフライン** — ローカルの Unity ドキュメントを読み取り、ネットワーク不要
 - 🔍 **全文検索** — タイトルだけでなく本文も FTS5 インデックス対象（ScriptReference API + Manual ハンドブック）
 - 📖 **マニュアル参照** — `get_unity_manual_doc` で Unity マニュアルのページを読む、または検索
-- 🎯 **インストール済みバージョンに正確一致** — `6000.5` は `6000.5.7f1` に前方一致解決。未インストール版は最新インストール済みにフォールバックし注記
-- 💾 **永続インデックス** — バージョンごとに一度構築し、再起動後も再利用
-- ⚙️ **ワンコマンドセットアップ** — `start` でインデックス構築と 6 ツールの設定を一括実行
+- 🎯 **1 バージョンのみ提供** — env `UNITY_DOCS_VERSION` で提供するビルド済みバージョンを選択
+- 💾 **永続インデックス** — `build` でバージョンごとの FTS5 DB を作成し、再起動後も再利用
+- 🛠️ **手動 IDE 設定** — ツールごとに stdio エントリを 1 つ追加。自動設定のマジックなし
 
 ## 開発
 

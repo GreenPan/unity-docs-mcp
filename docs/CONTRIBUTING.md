@@ -164,9 +164,8 @@ src/unity_docs_mcp/
 ├── scraper.py          # Local documentation reader (offline)
 ├── parser.py           # HTML parsing and markdown conversion
 ├── search_index.py     # SQLite FTS5 search index
-├── version_resolver.py # Version discovery & resolution
-├── mcp_config.py       # Writes MCP configs for AI tools
-├── cli.py              # `start` / `changesource` commands
+├── version_resolver.py # Version parsing & resolution
+├── cli.py              # `build` command
 └── __init__.py         # Package initialization
 ```
 

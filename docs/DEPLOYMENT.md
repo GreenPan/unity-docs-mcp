@@ -14,31 +14,46 @@
 pip install -e .
 ```
 
-### One-command setup
+### Build the offline index
 
 ```bash
-unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
 
-This builds the offline search index and writes MCP config entries for all six
-supported tools. If you omit `--editor-root` it prompts interactively (or uses
-`UNITY_HUB_EDITOR_DIR` / the platform default Hub path).
+This builds (or reuses) the SQLite FTS5 index for every installed Unity version.
+If you omit `--editor-root` it prompts interactively (or uses the platform
+default Hub path). It does **not** write any IDE config — you wire up the server
+manually (below).
 
-**Restart your AI tool** after running `start`.
+### Manual server config (one entry per tool)
 
-To configure only some tools:
+Add this stdio entry to your AI tool's MCP config, with `UNITY_DOCS_VERSION`
+set to the version you built (run `ls ~/.unity_docs_mcp/db/` to see them):
+
+```json
+{
+  "mcpServers": {
+    "unity-docs": {
+      "command": "C:\\path\\to\\venv\\Scripts\\python.exe",
+      "args": ["-m", "unity_docs_mcp.server"],
+      "env": { "UNITY_DOCS_VERSION": "6000.5.7f1" }
+    }
+  }
+}
+```
+
+**Important:** Use the full absolute path to the virtual environment's python to
+avoid "module not found" errors. **Restart your AI tool** after editing the config.
+Per-tool file locations (Claude Desktop, Claude Code, Cursor, VS Code, OpenCode,
+Codex) are in the README.
+
+### Switching to a different Unity version / install
 
 ```bash
-unity-docs-mcp start --tools claude-desktop,claude-code
+unity-docs-mcp build --editor-root "D:\NewUnity\Hub\Editor" --force
 ```
 
-### Switching Unity installs
-
-```bash
-unity-docs-mcp changesource --editor-root "D:\NewUnity\Hub\Editor"
-```
-
-Rebuilds the index from the new directory and refreshes all tool configs.
+then update `UNITY_DOCS_VERSION` in your tool configs.
 
 ## For Developers
 
@@ -54,40 +69,19 @@ pip install -e .
 python -m unittest discover tests/
 ```
 
-### Manual config (if you prefer not to run `start`)
-
-`config.json` in the repo root is a manual reference:
-
-```json
-{
-  "mcpServers": {
-    "unity-docs": {
-      "command": "C:\\path\\to\\venv\\Scripts\\python.exe",
-      "args": ["-m", "unity_docs_mcp.server"],
-      "cwd": "C:\\path\\to\\unity-docs-mcp",
-      "env": {
-        "UNITY_HUB_EDITOR_DIR": "C:\\Program Files\\Unity\\Hub\\Editor"
-      }
-    }
-  }
-}
-```
-
-**Important:** Use the full absolute path to the virtual environment's python to avoid "module not found" errors.
-
 ## Common Issues
 
 **"ModuleNotFoundError: No module named 'mcp'"**
 - Use the full path to the venv's python, not a bare `python`.
 
 **"No local Unity documentation found"**
-- The server can't find an editor root. Run `unity-docs-mcp start --editor-root <path>`
-  or set `UNITY_HUB_EDITOR_DIR` in the tool's config `env`.
+- No db exists for the requested version. Run `unity-docs-mcp build --editor-root <path>`,
+  then set `UNITY_DOCS_VERSION` in the tool's config `env`.
 
-**"Unsupported Unity version 'X'"** (or the version falls back unexpectedly)
-- X isn't installed locally (e.g. `6000.0` vs installed `6000.5.7f1`). The server now
-  falls back to the newest installed version with a note (`6000.0 not installed;
-  using 6000.5.7f1`). Use `list_unity_versions` to see what's installed.
+**A version falls back unexpectedly**
+- The requested version isn't the served one (e.g. `6000.0` vs `UNITY_DOCS_VERSION=6000.5.7f1`).
+  The server serves the configured version with a note (`6000.0 not installed; using 6000.5.7f1`).
+  Change `UNITY_DOCS_VERSION` to serve a different version.
 
 **Stack traces on Ctrl+C**
 - Handled gracefully: `🛑 Shutting down Unity Docs MCP Server...`
@@ -122,11 +116,11 @@ After publishing, users install with:
 
 ```bash
 pip install unity-docs-mcp
-unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
 
-(`pip install` provides the `unity-docs-mcp` command; `start` still locates your
-local editor docs and builds the index — that step is inherent to the offline
+(`pip install` provides the `unity-docs-mcp` command; `build` still turns your
+local editor docs into the offline index — that step is inherent to the offline
 design and can't be done at install time.)
 
 Note: the offline mode requires a locally installed Unity editor — there is no

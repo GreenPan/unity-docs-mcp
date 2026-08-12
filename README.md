@@ -12,7 +12,13 @@ Provides Unity documentation access directly in Claude — **fully offline**, re
 
 ## How it works
 
-The MCP server reads Unity's offline documentation that ships with every editor installed via Unity Hub (`.../Editor/Data/Documentation/en/`). No network requests are made. A SQLite FTS5 full-text index is built once per installed version, giving fast full-body search across all 42,000+ script reference pages.
+The MCP server reads Unity's offline documentation that ships with an installed
+Unity editor (`.../Editor/Data/Documentation/en/`). `unity-docs-mcp build` turns
+that documentation into a SQLite FTS5 full-text index per installed version
+(`~/.unity_docs_mcp/db/search_{version}.db`). The MCP server then serves **exactly
+one version**, chosen via the `UNITY_DOCS_VERSION` env var in your tool config,
+and recovers the docs directory from the built database. No network requests are
+made.
 
 ## Installation
 
@@ -23,36 +29,24 @@ The MCP server reads Unity's offline documentation that ships with every editor 
 pip install unity-docs-mcp
 ```
 
-This gives you the `unity-docs-mcp` command. Next, run `start` to locate your
-Unity editor docs, build the offline index, and write the MCP configs:
+This gives you the `unity-docs-mcp` command.
+
+### Step 1: Build the offline index
 
 ```bash
-unity-docs-mcp start
+unity-docs-mcp build --editor-root "C:\Program Files\Unity\Hub\Editor"
 ```
 
-(Developers working on the source tree use `pip install -e .` instead — see
-[Development](#development).)
+`build` scans the Hub Editor directory, and for every installed Unity version
+builds (or reuses) a SQLite FTS5 index. First run takes a minute or two; later
+runs are instant. Pass `--force` to rebuild. It does **not** touch any IDE
+config — you wire up the server manually (next step).
 
-### Step 1: Start (build index + configure AI tools)
+### Step 2: Add the server to your IDE manually
 
-```bash
-unity-docs-mcp start
-```
-
-`start` walks through two steps:
-
-1. **Locate the docs** — it prompts for your Unity Hub Editor directory (e.g. `C:\Program Files\Unity\Hub\Editor`), or you can pass it directly:
-   ```bash
-   unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
-   ```
-2. **Build the search index** — a SQLite FTS5 index is built for every installed Unity version (first run takes a minute or two; afterwards it is reused instantly).
-3. **Write MCP configs** — `unity-docs-mcp` writes its server entry into the config files of the supported AI tools below.
-
-### Manual configuration (no `start`)
-
-If you prefer to configure an MCP client by hand instead of running `start`,
-add the server entry directly to your tool's config. The server command is
-always the same:
+The MCP server is a stdio command. Add this entry to your tool's MCP config,
+pointing `UNITY_DOCS_VERSION` at the version you want to serve (the one `build`
+indexed — run `ls ~/.unity_docs_mcp/db/` to see them):
 
 ```json
 {
@@ -60,60 +54,47 @@ always the same:
     "unity-docs": {
       "command": "<path-to-python>",
       "args": ["-m", "unity_docs_mcp.server"],
-      "env": { "UNITY_HUB_EDITOR_DIR": "<Unity Hub Editor directory>" }
+      "env": { "UNITY_DOCS_VERSION": "6000.5.7f1" }
     }
   }
 }
 ```
 
-Where:
-- `<path-to-python>` is the Python interpreter that has `unity-docs-mcp` installed
-  (find it with `which python` on macOS/Linux, or `where python` on Windows).
-  Use a full absolute path to avoid "module not found" errors.
-- `<Unity Hub Editor directory>` is the parent of your installed editor folders,
-  e.g. `C:\Program Files\Unity\Hub\Editor`. You can point to it instead with an
-  environment variable (skip the `env` block) by setting `UNITY_HUB_EDITOR_DIR`.
+Where `<path-to-python>` is the Python interpreter that has `unity-docs-mcp`
+installed (find it with `which python` on macOS/Linux, or `where python` on
+Windows). Use a full absolute path to avoid "module not found" errors.
 
-Then place it in your client:
+Per-tool config locations:
 
-**Claude Code** — `.mcp.json` in your project root (top-level key `mcpServers`):
-```json
-{ "mcpServers": { "unity-docs": {
-  "command": "<path-to-python>", "args": ["-m", "unity_docs_mcp.server"],
-  "env": { "UNITY_HUB_EDITOR_DIR": "C:\\Program Files\\Unity\\Hub\\Editor" } } } }
-```
+- **Claude Code** — `.mcp.json` in your project root:
+  ```json
+  { "mcpServers": { "unity-docs": {
+    "command": "<path-to-python>", "args": ["-m", "unity_docs_mcp.server"],
+    "env": { "UNITY_DOCS_VERSION": "6000.5.7f1" } } } }
+  ```
+- **Claude Desktop** — `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
+  `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), same
+  `mcpServers` shape.
+- **Cursor** — `.cursor/mcp.json` in your project, `mcpServers` key.
+- **VS Code (Copilot)** — `.vscode/mcp.json` in your project, `servers` key, plus
+  `"type": "stdio"`.
+- **OpenCode** — `opencode.json` in your project, `mcp` key, `"type": "local"`,
+  `command` as an array, and `environment` instead of `env`.
+- **Codex** — `~/.codex/config.toml`, a `[mcp_servers.unity-docs]` table.
 
-**Claude Desktop** — `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), same
-`mcpServers` shape as above.
+Restart the AI tool after editing its config so the MCP server is picked up.
 
-> **Note**: without `start`, the search index is built **lazily** on the first
-> query (it can take a few minutes for the initial build; progress is printed to
-> stderr). Running `start` up front builds it eagerly and also auto-writes configs
-> for Cursor, VS Code (Copilot), OpenCode, and Codex — see
-> [docs/DETAILED_GUIDE.md](docs/DETAILED_GUIDE.md) for their exact file paths.
+> **Note**: if you skip `build`, the server still works — it builds the index
+> lazily on the first query (a few minutes; progress printed to stderr). Running
+> `build` up front just does it eagerly.
 
-### Switching Unity installs
-
-If you move to a different editor directory (new install, different drive):
-
-```bash
-unity-docs-mcp changesource --editor-root "D:\NewUnity\Hub\Editor"
-```
-
-`changesource` rebuilds the index from the new directory and refreshes all tool configs.
-
-### Supported AI tools
-
-`start` writes MCP configuration for: **Claude Desktop**, **Claude Code** (`.mcp.json`), **Cursor**, **VS Code (Copilot)**, **OpenCode**, and **Codex**.
-
-Use `--tools` to select a subset:
+### Switching to a different Unity version / install
 
 ```bash
-unity-docs-mcp start --tools claude-desktop,claude-code
+unity-docs-mcp build --editor-root "D:\NewUnity\Hub\Editor" --force
 ```
 
-Valid tool names: `claude-desktop`, `claude-code`, `cursor`, `vscode`, `opencode`, `codex`.
+then update `UNITY_DOCS_VERSION` in your tool configs to the version you want.
 
 ## Usage
 
@@ -122,18 +103,17 @@ Ask Claude about Unity APIs:
 - "How do I use NavMeshAgent?"
 - "Search for transform methods"
 
-All lookups resolve to your **installed Unity versions**. Requesting a version
-that isn't installed falls back to the newest installed version with a note
-(e.g. `6000.0 not installed; using 6000.5.7f1`).
+All lookups resolve to the **version you point the server at** (`UNITY_DOCS_VERSION`).
+The server serves exactly that version's docs.
 
 ## Features
 
 - 🚫 **Fully offline** — reads local Unity documentation, no network
 - 🔍 **Full-text search** — FTS5 index over page bodies (ScriptReference API + Manual handbook)
 - 📖 **Manual lookup** — `get_unity_manual_doc` reads Unity Manual pages or searches them
-- 🎯 **Exact installed versions** — prefix matching resolves `6000.5` → `6000.5.7f1`; uninstalled versions fall back to the newest installed with a note
-- 💾 **Persistent index** — built once per version, reused across restarts
-- ⚙️ **One-command setup** — `start` builds the index and wires up all 6 AI tools
+- 🎯 **Single version served** — `UNITY_DOCS_VERSION` env picks which built version the server reads
+- 💾 **Persistent index** — `build` makes a per-version FTS5 db, reused across restarts
+- 🛠️ **Manual IDE setup** — one stdio entry per tool; no auto-config magic
 
 ## Development
 

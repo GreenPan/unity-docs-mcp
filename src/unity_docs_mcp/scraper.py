@@ -1,47 +1,65 @@
 """Local Unity documentation reader (fully offline).
 
 Replaces the old web scraper: instead of HTTP requests to docs.unity3d.com, it
-reads the offline documentation bundled with each installed Unity editor. The
-editor root is resolved from (in order): constructor arg > ``UNITY_HUB_EDITOR_DIR``
-env var > platform default Hub path.
+reads the offline documentation bundled with a locally installed Unity editor.
+The server serves exactly one version, chosen from the ``UNITY_DOCS_VERSION``
+env var; the docs directory is recovered from the built db's meta.source_dir.
 """
 
 import os
 from typing import Any, Dict, List, Optional
 
-from .search_index import UnitySearchIndex
+from .search_index import UnitySearchIndex, list_built_versions, read_db_source_dir
 from .version_resolver import (
-    default_editor_root,
-    discover_versions,
+    InstalledVersion,
     normalize_to_major_minor,
+    parse_unity_version,
     resolve_version,
 )
 
 
 class UnityDocScraper:
-    """Read Unity API documentation from a local Unity installation."""
+    """Read Unity API documentation for one locally installed version."""
 
-    def __init__(self, editor_root: Optional[str] = None, search_index: Optional[UnitySearchIndex] = None):
-        self.editor_root = self._resolve_editor_root(editor_root)
-        self.installed = discover_versions(self.editor_root)
-        self.docs_dirs = {v.name: v.docs_dir for v in self.installed}
+    def __init__(self, docs_dir: Optional[str] = None, version: Optional[str] = None,
+                 search_index: Optional[UnitySearchIndex] = None, db_dir: Optional[str] = None):
+        self.version = version or os.environ.get("UNITY_DOCS_VERSION")
+
+        if docs_dir is None:
+            # Recover the docs dir from the built db for the selected version.
+            if db_dir is None:
+                db_dir = UnitySearchIndex().db_dir
+            if not self.version:
+                versions = list_built_versions(db_dir)
+                self.version = versions[0] if versions else None
+            if self.version:
+                docs_dir = read_db_source_dir(db_dir, self.version)
+
+        self.docs_dirs = {}
+        if docs_dir and self.version:
+            self.docs_dirs[self.version] = docs_dir
+
+        installed = []
+        if self.version and self.version in self.docs_dirs:
+            version_key = parse_unity_version(self.version)
+            if version_key is not None:
+                installed.append(
+                    InstalledVersion(
+                        name=self.version,
+                        editor_dir=docs_dir,  # not used for single-version serving
+                        docs_dir=docs_dir,
+                        version_key=version_key,
+                    )
+                )
+        self.installed = installed
+
         self.search_index = search_index or UnitySearchIndex(docs_dirs=self.docs_dirs)
 
         # API availability cache (in-memory only; per-install docs are static).
         self._api_cache: Dict[str, Dict[str, List[str]]] = {}
 
-    # ------------------------------------------------------------------ setup
-
-    def _resolve_editor_root(self, arg: Optional[str]) -> Optional[str]:
-        if arg is not None:
-            return arg if os.path.isdir(arg) else None
-        candidate = os.environ.get("UNITY_HUB_EDITOR_DIR") or default_editor_root()
-        if candidate and os.path.isdir(candidate):
-            return candidate
-        return None
-
     def resolve_version(self, version: Optional[str]):
-        """Resolve a user-supplied version against installed versions."""
+        """Resolve a user-supplied version against the served version."""
         return resolve_version(version, self.installed)
 
     # ------------------------------------------------------------------ paths

@@ -19,6 +19,39 @@ from bs4 import BeautifulSoup
 from .version_resolver import parse_unity_version
 
 
+def read_db_source_dir(db_dir: str, version: str) -> Optional[str]:
+    """Return the docs source_dir recorded in a version's db meta, or None."""
+    path = os.path.join(db_dir, f"search_{version}.db")
+    if not os.path.exists(path):
+        return None
+    try:
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT source_dir FROM meta WHERE version = ? LIMIT 1", (version,)
+            ).fetchone()
+            return row["source_dir"] if row else None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def list_built_versions(db_dir: str) -> List[str]:
+    """List versions that have a built db under ``db_dir``, newest first."""
+    if not os.path.isdir(db_dir):
+        return []
+    versions = []
+    for entry in os.listdir(db_dir):
+        if entry.startswith("search_") and entry.endswith(".db"):
+            name = entry[len("search_"):-len(".db")]
+            if parse_unity_version(name) is not None:
+                versions.append(name)
+    versions.sort(key=parse_unity_version, reverse=True)
+    return versions
+
+
 class UnitySearchIndex:
     """Search Unity documentation using a local SQLite FTS5 index."""
 
@@ -107,10 +140,10 @@ class UnitySearchIndex:
             return True
         if state == "stale" and not force:
             # Only warn when we rebuild unprompted (docs moved); a user-triggered
-            # `changesource --force` rebuild needs no hint.
+            # `build --force` rebuild needs no hint.
             print(
                 f"警告: {version} 的文档索引与实际文档不一致，正在自动重建。"
-                "若经常发生，可运行 `unity-docs-mcp changesource` 明确重建。",
+                "若经常发生，可运行 `unity-docs-mcp build --force` 明确重建。",
                 file=sys.stderr,
             )
         ok = self.build_index(version)

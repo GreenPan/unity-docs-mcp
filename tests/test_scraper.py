@@ -1,6 +1,5 @@
 """Tests for the local (offline) UnityDocScraper."""
 
-import contextlib
 import os
 import shutil
 import sys
@@ -11,8 +10,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from unity_docs_mcp.scraper import UnityDocScraper
 from unity_docs_mcp.search_index import UnitySearchIndex
-from unity_docs_mcp.version_resolver import discover_versions
 from tests.helpers import make_fake_unity_install
+
+
+def _docs_dir_for(root, version):
+    """Return the fake install's Documentation/en dir for ``version``."""
+    return os.path.join(
+        root, version, "Editor", "Data", "Documentation", "en"
+    )
 
 
 class TestUnityDocScraper(unittest.TestCase):
@@ -22,7 +27,9 @@ class TestUnityDocScraper(unittest.TestCase):
         self.root, _ = make_fake_unity_install(
             self.tmp, ["2022.3.45f1", "6000.5.7f1"]
         )
-        self.scraper = self._make_scraper(self.root)
+        self.scraper = self._make_scraper(
+            _docs_dir_for(self.root, "6000.5.7f1"), "6000.5.7f1"
+        )
 
     def tearDown(self):
         self.scraper.search_index.close()
@@ -33,45 +40,35 @@ class TestUnityDocScraper(unittest.TestCase):
     def test_initialization(self):
         self.assertIsNotNone(self.scraper)
         self.assertEqual(
-            [v.name for v in self.scraper.installed], ["6000.5.7f1", "2022.3.45f1"]
+            [v.name for v in self.scraper.installed], ["6000.5.7f1"]
         )
         self.assertEqual(
-            self.scraper.get_supported_versions(), ["6000.5.7f1", "2022.3.45f1"]
+            self.scraper.get_supported_versions(), ["6000.5.7f1"]
         )
 
-    def _make_scraper(self, editor_root):
-        versions = discover_versions(editor_root)
+    def _make_scraper(self, docs_dir, version):
         self._db_n += 1
         idx = UnitySearchIndex(
-            docs_dirs={v.name: v.docs_dir for v in versions},
+            docs_dirs={version: docs_dir},
             db_dir=os.path.join(self.tmp, f"db{self._db_n}"),
         )
-        return UnityDocScraper(editor_root=editor_root, search_index=idx)
+        return UnityDocScraper(docs_dir=docs_dir, version=version, search_index=idx)
 
-    def test_editor_root_resolution_priority(self):
-        other_root = os.path.join(self.tmp, "other")
-        make_fake_unity_install(other_root, ["2023.2.0a1"])
-        scraper = self._make_scraper(other_root)
-        self.assertEqual(scraper.editor_root, other_root)
+    def test_docs_dir_injection(self):
+        other = os.path.join(self.tmp, "other")
+        make_fake_unity_install(other, ["2023.2.0a1"])
+        scraper = self._make_scraper(
+            _docs_dir_for(other, "2023.2.0a1"), "2023.2.0a1"
+        )
         self.assertEqual(scraper.get_supported_versions(), ["2023.2.0a1"])
+        self.assertEqual(scraper.get_latest_version(), "2023.2.0a1")
         scraper.search_index.close()
 
-    def test_env_var_resolution(self):
-        other_root = os.path.join(self.tmp, "envroot")
-        make_fake_unity_install(other_root, ["2023.2.0a1"])
-        with self._env("UNITY_HUB_EDITOR_DIR", other_root):
-            scraper = self._make_scraper(None)
-            self.assertEqual(scraper.editor_root, other_root)
-            scraper.search_index.close()
-
-    def test_no_editor_root_no_install(self):
-        # editor_root="" resolves to None (no install); a fresh empty db_dir
-        # means no docs_dirs and no leftover index to fall back to.
+    def test_no_install(self):
         self._db_n += 1
-        idx = UnitySearchIndex(
-            docs_dirs={}, db_dir=os.path.join(self.tmp, f"db{self._db_n}")
-        )
-        scraper = UnityDocScraper(editor_root="", search_index=idx)
+        db_dir = os.path.join(self.tmp, f"db{self._db_n}")
+        idx = UnitySearchIndex(docs_dirs={}, db_dir=db_dir)
+        scraper = UnityDocScraper(search_index=idx, db_dir=db_dir)
         self.assertEqual(scraper.get_supported_versions(), [])
         self.assertEqual(scraper.get_latest_version(), "")
         # Suggest still works (returns empty without an index).
@@ -89,11 +86,12 @@ class TestUnityDocScraper(unittest.TestCase):
         self.assertEqual(self.scraper.normalize_version("6000.5"), "6000.5")
 
     def test_validate_version_exact_and_prefix(self):
+        # Single-version server: only the served version and its prefixes match.
         self.assertTrue(self.scraper.validate_version("6000.5.7f1"))
         self.assertTrue(self.scraper.validate_version("6000"))
-        self.assertTrue(self.scraper.validate_version("2022.3"))
+        self.assertTrue(self.scraper.validate_version("6000.5"))
+        self.assertFalse(self.scraper.validate_version("2022.3"))
         self.assertFalse(self.scraper.validate_version("6000.0"))
-        self.assertFalse(self.scraper.validate_version("2019.4"))
         self.assertFalse(self.scraper.validate_version("Foo"))
 
     def test_resolve_version(self):
@@ -193,10 +191,9 @@ class TestUnityDocScraper(unittest.TestCase):
 
     def test_get_manual_doc_no_install(self):
         self._db_n += 1
-        idx = UnitySearchIndex(
-            docs_dirs={}, db_dir=os.path.join(self.tmp, f"db{self._db_n}")
-        )
-        scraper = UnityDocScraper(editor_root="", search_index=idx)
+        db_dir = os.path.join(self.tmp, f"db{self._db_n}")
+        idx = UnitySearchIndex(docs_dirs={}, db_dir=db_dir)
+        scraper = UnityDocScraper(search_index=idx, db_dir=db_dir)
         result = scraper.get_manual_doc("urp")
         self.assertEqual(result["status"], "error")
         scraper.search_index.close()
@@ -206,38 +203,17 @@ class TestUnityDocScraper(unittest.TestCase):
     def test_check_api_availability_across_versions(self):
         info = self.scraper.check_api_availability_across_versions("GameObject")
         self.assertIn("6000.5.7f1", info["available"])
-        self.assertIn("2022.3.45f1", info["available"])
         self.assertEqual(info["unavailable"], [])
 
     def test_check_api_availability_missing(self):
         info = self.scraper.check_api_availability_across_versions("NopeNotReal")
         self.assertEqual(info["available"], [])
-        self.assertEqual(
-            sorted(info["unavailable"]), ["2022.3.45f1", "6000.5.7f1"]
-        )
+        self.assertEqual(info["unavailable"], ["6000.5.7f1"])
 
     def test_check_api_availability_cached(self):
         info1 = self.scraper.check_api_availability_across_versions("GameObject")
         info2 = self.scraper.check_api_availability_across_versions("GameObject")
         self.assertEqual(info1, info2)
-
-    # ------------------------------------------------------------- helpers
-
-    @staticmethod
-    def _env(key, value):
-        @contextlib.contextmanager
-        def ctx():
-            old = os.environ.get(key)
-            os.environ[key] = value
-            try:
-                yield
-            finally:
-                if old is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = old
-
-        return ctx()
 
 
 if __name__ == "__main__":

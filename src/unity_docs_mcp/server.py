@@ -23,9 +23,7 @@ class UnityDocsMCPServer:
 
     def __init__(self, editor_root=None, scraper=None):
         self.server = Server("unity-docs-mcp")
-        self.scraper = scraper or UnityDocScraper(
-            editor_root=editor_root or os.environ.get("UNITY_HUB_EDITOR_DIR")
-        )
+        self.scraper = scraper or UnityDocScraper()
         self.parser = UnityDocParser()
         self._setup_handlers()
 
@@ -40,9 +38,9 @@ class UnityDocsMCPServer:
         if not self.scraper.installed:
             return None, None, (
                 "Error: No local Unity documentation found. "
-                "Run `unity-docs-mcp start --editor-root <path>` to set up the "
-                "documentation index, or set UNITY_HUB_EDITOR_DIR in the MCP "
-                "server config to your Unity Hub Editor directory."
+                "Run `unity-docs-mcp build --editor-root <path>` to build the "
+                "docs index, then set UNITY_DOCS_VERSION in the MCP server "
+                "config env to the version you want to serve."
             )
         resolved = self.scraper.resolve_version(version)
         version_str = str(version).strip() if version else ""
@@ -317,7 +315,7 @@ class UnityDocsMCPServer:
             return [
                 TextContent(
                     type="text",
-                    text="No local Unity documentation found. Run `unity-docs-mcp start` to set up the docs index.",
+                    text="No local Unity documentation found. Run `unity-docs-mcp build` to build the docs index, then set UNITY_DOCS_VERSION.",
                 )
             ]
         content = "# Supported Unity Versions\n\n"
@@ -427,13 +425,13 @@ async def main():
 
     print(f"🚀 Unity Docs MCP Server v{__version__}", file=sys.stderr)
     print("📚 Offline mode - reading local Unity installation docs", file=sys.stderr)
-    scraper = UnityDocScraper(editor_root=os.environ.get("UNITY_HUB_EDITOR_DIR"))
+    scraper = UnityDocScraper()
     if scraper.installed:
-        versions = ", ".join(scraper.get_supported_versions())
-        print(f"📦 Installed Unity versions: {versions}", file=sys.stderr)
+        print(f"📦 Serving Unity version: {scraper.get_latest_version()}", file=sys.stderr)
     else:
         print(
-            "⚠️ No local Unity documentation found. Run `unity-docs-mcp start` to set up.",
+            "⚠️ No local Unity documentation found. Run `unity-docs-mcp build` "
+            "to build the index, then set UNITY_DOCS_VERSION in the config env.",
             file=sys.stderr,
         )
     print("🔌 Starting MCP server...", file=sys.stderr)
