@@ -31,6 +31,51 @@ unity-docs-mcp start
 2. **Build the search index** — a SQLite FTS5 index is built for every installed Unity version (first run takes a minute or two; afterwards it is reused instantly).
 3. **Write MCP configs** — `unity-docs-mcp` writes its server entry into the config files of the supported AI tools below.
 
+### Manual configuration (no `start`)
+
+If you prefer to configure an MCP client by hand instead of running `start`,
+add the server entry directly to your tool's config. The server command is
+always the same:
+
+```json
+{
+  "mcpServers": {
+    "unity-docs": {
+      "command": "<path-to-python>",
+      "args": ["-m", "unity_docs_mcp.server"],
+      "env": { "UNITY_HUB_EDITOR_DIR": "<Unity Hub Editor directory>" }
+    }
+  }
+}
+```
+
+Where:
+- `<path-to-python>` is the Python interpreter that has `unity-docs-mcp` installed
+  (find it with `which python` on macOS/Linux, or `where python` on Windows).
+  Use a full absolute path to avoid "module not found" errors.
+- `<Unity Hub Editor directory>` is the parent of your installed editor folders,
+  e.g. `C:\Program Files\Unity\Hub\Editor`. You can point to it instead with an
+  environment variable (skip the `env` block) by setting `UNITY_HUB_EDITOR_DIR`.
+
+Then place it in your client:
+
+**Claude Code** — `.mcp.json` in your project root (top-level key `mcpServers`):
+```json
+{ "mcpServers": { "unity-docs": {
+  "command": "<path-to-python>", "args": ["-m", "unity_docs_mcp.server"],
+  "env": { "UNITY_HUB_EDITOR_DIR": "C:\\Program Files\\Unity\\Hub\\Editor" } } } }
+```
+
+**Claude Desktop** — `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), same
+`mcpServers` shape as above.
+
+> **Note**: without `start`, the search index is built **lazily** on the first
+> query (it can take a few minutes for the initial build; progress is printed to
+> stderr). Running `start` up front builds it eagerly and also auto-writes configs
+> for Cursor, VS Code (Copilot), OpenCode, and Codex — see
+> [docs/DETAILED_GUIDE.md](docs/DETAILED_GUIDE.md) for their exact file paths.
+
 ### Switching Unity installs
 
 If you move to a different editor directory (new install, different drive):

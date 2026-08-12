@@ -31,6 +31,37 @@ unity-docs-mcp start
 2. **検索インデックスを構築** — インストール済みの各 Unity バージョンについて SQLite FTS5 インデックスを構築します（初回は数分かかります。以降は即座に再利用されます）。
 3. **MCP 設定を書き込み** — 対応する各 AI ツールの設定ファイルに MCP サーバーエントリを書き込みます。
 
+### 手動設定（`start` を使わない場合）
+
+`start` を実行せずに MCP クライアントへ手動で設定する場合は、サーバーエントリを直接追加します。サーバーコマンドは常に同じです：
+
+```json
+{
+  "mcpServers": {
+    "unity-docs": {
+      "command": "<pythonへのパス>",
+      "args": ["-m", "unity_docs_mcp.server"],
+      "env": { "UNITY_HUB_EDITOR_DIR": "<Unity Hub Editorディレクトリ>" }
+    }
+  }
+}
+```
+
+- `<pythonへのパス>`：`unity-docs-mcp` がインストールされている Python インタプリタの**絶対パス**（macOS/Linux は `which python`、Windows は `where python` で確認）。「module not found」エラーを避けるため絶対パスを使います。
+- `<Unity Hub Editorディレクトリ>`：インストール済みエディタフォルダの親ディレクトリ（例：`C:\Program Files\Unity\Hub\Editor`）。`env` ブロックを省略し、環境変数 `UNITY_HUB_EDITOR_DIR` で指定しても構いません。
+
+**Claude Code** — プロジェクト直下の `.mcp.json`（トップレベルキー `mcpServers`）：
+```json
+{ "mcpServers": { "unity-docs": {
+  "command": "<pythonへのパス>", "args": ["-m", "unity_docs_mcp.server"],
+  "env": { "UNITY_HUB_EDITOR_DIR": "C:\\Program Files\\Unity\\Hub\\Editor" } } } }
+```
+
+**Claude Desktop** — `%APPDATA%\Claude\claude_desktop_config.json`（Windows）または
+`~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）に、同じ `mcpServers` 形式で追加。
+
+> **注意**: `start` を実行しない場合、検索インデックスは**初回クエリ時に遅延ビルド**されます（初回は数分かかり、進捗は stderr に出力）。`start` を先に実行するとインデックスを事前に構築し、Cursor / VS Code (Copilot) / OpenCode / Codex の設定も自動で書き込みます — 正確なファイルパスは [docs/DETAILED_GUIDE.md](docs/DETAILED_GUIDE.md) を参照。
+
 ### Unity のインストール先を変更した場合
 
 別のエディタディレクトリ（新しいインストールや別ドライブなど）に移動した場合：
