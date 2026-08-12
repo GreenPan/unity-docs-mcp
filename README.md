@@ -2,6 +2,8 @@
 
 Provides Unity documentation access directly in Claude — **fully offline**, reading the documentation bundled with your locally installed Unity editors.
 
+> **About this project**: this is a fork of an earlier `unity-docs-mcp` that scraped Unity's online documentation. We removed the online querying entirely and rebuilt it around a locally built offline database — the server only ever reads documentation that ships with your installed Unity editors, and makes no network requests at all.
+
 **⚠️ Disclaimer**: This is an unofficial community project. Unity Technologies is not affiliated with and does not endorse or support this project.
 
 [日本語版 README](README_ja.md)
