@@ -1,7 +1,8 @@
-"""Unity Docs MCP Server - Main server implementation."""
+"""Unity Docs MCP Server - Main server implementation (offline, local docs)."""
 
 import sys
 import asyncio
+import os
 from typing import Any
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -12,21 +13,49 @@ try:
     from .parser import UnityDocParser
 except ImportError:
     # Handle direct execution
-    import os
-
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from unity_docs_mcp.scraper import UnityDocScraper
     from unity_docs_mcp.parser import UnityDocParser
 
 
 class UnityDocsMCPServer:
-    """MCP Server for Unity documentation."""
+    """MCP Server for Unity documentation (local offline mode)."""
 
-    def __init__(self):
+    def __init__(self, editor_root=None):
         self.server = Server("unity-docs-mcp")
-        self.scraper = UnityDocScraper()
+        self.scraper = UnityDocScraper(editor_root=editor_root or os.environ.get("UNITY_HUB_EDITOR_DIR"))
         self.parser = UnityDocParser()
         self._setup_handlers()
+
+    def _resolve_or_error(self, version):
+        """Resolve a version to an installed one.
+
+        A requested version that isn't installed falls back to the newest
+        installed version; the caller renders ``annotation`` to stay
+        transparent. The only hard error is when no local docs exist at all.
+        Returns (resolved, annotation, error).
+        """
+        if not self.scraper.installed:
+            return None, None, (
+                "Error: No local Unity documentation found. "
+                "Run `unity-docs-mcp start --editor-root <path>` to set up the "
+                "documentation index, or set UNITY_HUB_EDITOR_DIR in the MCP "
+                "server config to your Unity Hub Editor directory."
+            )
+        resolved = self.scraper.resolve_version(version)
+        if resolved is None:
+            # Requested version isn't installed -> serve the newest installed.
+            fallback = self.scraper.resolve_version(None)
+            if version and str(version).strip():
+                annotation = f"{str(version).strip()} not installed; using {fallback.name}"
+            else:
+                annotation = None
+            return fallback, annotation, None
+        if version and str(version).strip() and str(version).strip().lower() != resolved.name.lower():
+            annotation = f"from {str(version).strip()}"
+        else:
+            annotation = None
+        return resolved, annotation, None
 
     def _setup_handlers(self):
         """Setup MCP server handlers."""
@@ -51,7 +80,7 @@ class UnityDocsMCPServer:
                             },
                             "version": {
                                 "type": "string",
-                                "description": "Unity version (optional - defaults to latest available version if not specified)",
+                                "description": "Unity version (optional - defaults to latest installed version if not specified)",
                             },
                         },
                         "required": ["class_name"],
@@ -59,7 +88,7 @@ class UnityDocsMCPServer:
                 ),
                 Tool(
                     name="search_unity_docs",
-                    description="Search Unity documentation",
+                    description="Search the Unity Scripting API reference",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -69,15 +98,33 @@ class UnityDocsMCPServer:
                             },
                             "version": {
                                 "type": "string",
-                                "description": "Unity version (optional - defaults to latest available version if not specified)",
+                                "description": "Unity version (optional - defaults to latest installed version if not specified)",
                             },
                         },
                         "required": ["query"],
                     },
                 ),
                 Tool(
+                    name="get_unity_manual_doc",
+                    description="Read a Unity Manual page, or search the Manual when the page isn't found",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "page": {
+                                "type": "string",
+                                "description": "Manual page slug, title, or a search query (e.g., 'urp/urp-introduction', 'navigation and pathfinding')",
+                            },
+                            "version": {
+                                "type": "string",
+                                "description": "Unity version (optional - defaults to latest installed version if not specified)",
+                            },
+                        },
+                        "required": ["page"],
+                    },
+                ),
+                Tool(
                     name="list_unity_versions",
-                    description="List supported Unity versions",
+                    description="List installed Unity versions",
                     inputSchema={"type": "object", "properties": {}},
                 ),
                 Tool(
@@ -114,6 +161,11 @@ class UnityDocsMCPServer:
                     arguments.get("query"), arguments.get("version")
                 )
 
+            elif name == "get_unity_manual_doc":
+                return await self._get_unity_manual_doc(
+                    arguments.get("page"), arguments.get("version")
+                )
+
             elif name == "list_unity_versions":
                 return await self._list_unity_versions()
 
@@ -130,44 +182,18 @@ class UnityDocsMCPServer:
         if not class_name:
             return [TextContent(type="text", text="Error: class_name is required")]
 
-        # If no version specified, get latest dynamically
-        if version is None:
-            version = self.scraper.get_latest_version()
+        resolved, annotation, error = self._resolve_or_error(version)
+        if error:
+            return [TextContent(type="text", text=error)]
 
-        # Store original version for display purposes
-        original_version = version
+        version_name = resolved.name
 
-        # Validate version (this will automatically normalize it)
-        if not self.scraper.validate_version(version):
-            normalized = self.scraper.normalize_version(version)
-            if normalized != version:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Error: Unsupported Unity version '{version}' (normalized to '{normalized}'). Supported versions: {', '.join(self.scraper.get_supported_versions())}",
-                    )
-                ]
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Error: Unsupported Unity version '{version}'. Supported versions: {', '.join(self.scraper.get_supported_versions())}",
-                    )
-                ]
-
-        # Normalize version for API calls
-        version = self.scraper.normalize_version(version)
-
-        # Try to detect member type using search index if available
+        # Try to detect member type using the search index if available.
         member_type = None
         if method_name and hasattr(self.scraper, "search_index"):
             query = f"{class_name} {method_name}"
-            search_results = self.scraper.search_docs(query, version)
-
-            if search_results.get("status") == "success" and search_results.get(
-                "results"
-            ):
-                # Look for exact match to get type info
+            search_results = self.scraper.search_docs(query, version_name)
+            if search_results.get("status") == "success" and search_results.get("results"):
                 for result in search_results["results"]:
                     if (
                         result.get("title") == f"{class_name}.{method_name}"
@@ -176,52 +202,38 @@ class UnityDocsMCPServer:
                         member_type = result.get("type")
                         break
 
-        # Fetch the documentation for the exact version requested
         result = self.scraper.get_api_doc(
-            class_name, method_name, version, member_type=member_type
+            class_name, method_name, version_name, member_type=member_type
         )
 
-        # If error, check availability across versions and provide helpful info
         if result.get("status") == "error":
             if method_name:
-                base_error = f"'{class_name}.{method_name}' not found in Unity {version} documentation."
+                base_error = f"'{class_name}.{method_name}' not found in Unity {version_name} documentation."
             else:
-                base_error = (
-                    f"'{class_name}' not found in Unity {version} documentation."
-                )
+                base_error = f"'{class_name}' not found in Unity {version_name} documentation."
 
-            # Check availability across other versions
             try:
                 version_info = self.scraper.check_api_availability_across_versions(
                     class_name, method_name
                 )
-
                 if version_info["available"]:
                     error_msg = f"{base_error}\n\n**Available in versions:** {', '.join(version_info['available'])}"
                     if version_info["unavailable"]:
                         error_msg += f"\n**Not available in:** {', '.join(version_info['unavailable'])}"
                 else:
-                    # Provide more helpful error message
                     error_msg = f"{base_error}\n\n"
-
-                    # If no namespace in class name, suggest searching
                     if "." not in class_name:
                         error_msg += "**Troubleshooting tips:**\n"
                         error_msg += f"1. This class might exist in a namespace. Try searching for '{class_name}' to find the full name.\n"
                         error_msg += "2. Common Unity namespaces: AI, UI, VFX, Rendering, Audio, etc.\n"
                         error_msg += "3. Example: 'NavMeshAgent' is actually 'AI.NavMeshAgent'\n\n"
-
-                    error_msg += "**Note:** The API might exist but wasn't found in the tested versions."
-
+                    error_msg += "**Note:** The API might exist but wasn't found in the installed versions."
             except Exception:
-                # Fallback to basic error if version checking fails
                 error_msg = base_error
 
             return [TextContent(type="text", text=error_msg)]
 
-        # Parse the HTML content
         parsed_result = self.parser.parse_api_doc(result["html"], result["url"])
-
         if "error" in parsed_result:
             return [
                 TextContent(
@@ -230,18 +242,12 @@ class UnityDocsMCPServer:
                 )
             ]
 
-        # Format the response
         content = f"# {parsed_result['title']}\n\n"
-
-        # Show version info (including normalization if different)
-        if original_version != version:
-            content += (
-                f"**Unity Version:** {version} (normalized from {original_version})\n"
-            )
+        if annotation:
+            content += f"**Unity Version:** {version_name} ({annotation})\n"
         else:
-            content += f"**Unity Version:** {version}\n"
-
-        content += f"**Source:** {parsed_result['url']}\n\n"
+            content += f"**Unity Version:** {version_name}\n"
+        content += f"**Source:** {result['url']}\n\n"
         content += parsed_result["content"]
 
         return [TextContent(type="text", text=content)]
@@ -253,40 +259,17 @@ class UnityDocsMCPServer:
         if not query:
             return [TextContent(type="text", text="Error: query is required")]
 
-        # If no version specified, get latest dynamically
-        if version is None:
-            version = self.scraper.get_latest_version()
+        resolved, annotation, error = self._resolve_or_error(version)
+        if error:
+            return [TextContent(type="text", text=error)]
 
-        # Store original version for display purposes
-        original_version = version
+        version_name = resolved.name
 
-        if not self.scraper.validate_version(version):
-            normalized = self.scraper.normalize_version(version)
-            if normalized != version:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Error: Unsupported Unity version '{version}' (normalized to '{normalized}'). Supported versions: {', '.join(self.scraper.get_supported_versions())}",
-                    )
-                ]
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Error: Unsupported Unity version '{version}'. Supported versions: {', '.join(self.scraper.get_supported_versions())}",
-                    )
-                ]
-
-        # Normalize version for API calls
-        version = self.scraper.normalize_version(version)
-
-        # Perform the search
-        result = self.scraper.search_docs(query, version)
+        result = self.scraper.search_docs(query, version_name)
 
         if result.get("status") == "error":
             return [TextContent(type="text", text=f"Error: {result.get('error')}")]
 
-        # Get search results directly from scraper
         search_results = result.get("results", [])
 
         if not search_results:
@@ -294,40 +277,30 @@ class UnityDocsMCPServer:
                 TextContent(type="text", text=f"No results found for query: '{query}'")
             ]
 
-        # Format the response
         content = "# Unity Documentation Search Results\n\n"
         content += f"**Query:** {query}\n"
-
-        # Show version info (including normalization if different)
-        if original_version != version:
-            content += f"**Version:** {version} (normalized from {original_version})\n"
+        if annotation:
+            content += f"**Version:** {version_name} ({annotation})\n"
         else:
-            content += f"**Version:** {version}\n"
-
+            content += f"**Version:** {version_name}\n"
         content += f"**Results:** {result.get('count', len(search_results))} found\n\n"
-        content += "💡 **Tip:** For detailed documentation with our advanced caching, use `get_unity_api_doc` with the exact class name from results below.\n\n"
+        content += "💡 **Tip:** For detailed documentation, use `get_unity_api_doc` with the exact class name from results below.\n\n"
 
-        for i, res in enumerate(search_results[:10], 1):  # Show top 10 results
+        for i, res in enumerate(search_results[:10], 1):
             content += f"## {i}. {res['title']}\n"
             if res.get("type"):
                 content += f"**Type:** {res['type']}\n"
 
-            # Extract class name for get_unity_api_doc suggestion
             title = res.get("title", "")
             result_type = res.get("type", "")
-
-            # Show tool help for classes, properties, and methods
             if result_type in ["class", "property", "method", "function"]:
-                # For properties and methods, extract the base class name
                 if result_type in ["property", "method", "function"] and "." in title:
-                    # Split to get class and member names
                     parts = title.split(".")
                     class_name = ".".join(parts[:-1])
                     member_name = parts[-1]
-                    content += f'**📋 Use:** `get_unity_api_doc(class_name: "{class_name}", method_name: "{member_name}", version: "{version}")`\n'
+                    content += f'**📋 Use:** `get_unity_api_doc(class_name: "{class_name}", method_name: "{member_name}", version: "{version_name}")`\n'
                 else:
-                    # For classes (with or without namespace)
-                    content += f'**📋 Use:** `get_unity_api_doc(class_name: "{title}", version: "{version}")`\n'
+                    content += f'**📋 Use:** `get_unity_api_doc(class_name: "{title}", version: "{version_name}")`\n'
 
             if res.get("url"):
                 content += f"**URL:** {res['url']}\n"
@@ -338,8 +311,15 @@ class UnityDocsMCPServer:
         return [TextContent(type="text", text=content)]
 
     async def _list_unity_versions(self) -> list[TextContent]:
-        """List supported Unity versions."""
+        """List installed Unity versions."""
         versions = self.scraper.get_supported_versions()
+        if not versions:
+            return [
+                TextContent(
+                    type="text",
+                    text="No local Unity documentation found. Run `unity-docs-mcp start` to set up the docs index.",
+                )
+            ]
         content = "# Supported Unity Versions\n\n"
         for version in versions:
             content += f"- {version}\n"
@@ -366,6 +346,65 @@ class UnityDocsMCPServer:
 
         return [TextContent(type="text", text=content)]
 
+    async def _get_unity_manual_doc(self, page: str, version: str = None) -> list[TextContent]:
+        """Read a Unity Manual page, or fall back to a Manual search."""
+        if not page:
+            return [TextContent(type="text", text="Error: page is required")]
+
+        resolved, annotation, error = self._resolve_or_error(version)
+        if error:
+            return [TextContent(type="text", text=error)]
+
+        version_name = resolved.name
+        result = self.scraper.get_manual_doc(page, version_name)
+
+        if result.get("status") == "error":
+            return [TextContent(type="text", text=f"Error: {result.get('error')}")]
+
+        if result.get("status") == "search":
+            search_results = result.get("results", [])
+            if not search_results:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"No Manual results found for: '{page}'",
+                    )
+                ]
+            content = "# Unity Manual Search Results\n\n"
+            content += f"**Query:** {page}\n"
+            if annotation:
+                content += f"**Version:** {version_name} ({annotation})\n"
+            else:
+                content += f"**Version:** {version_name}\n"
+            content += f"**Results:** {result.get('count', len(search_results))} found\n\n"
+            for i, res in enumerate(search_results[:10], 1):
+                content += f"## {i}. {res['title']}\n"
+                content += f'**📋 Use:** `get_unity_manual_doc(page: "{res["name"]}", version: "{version_name}")`\n'
+                if res.get("url"):
+                    content += f"**URL:** {res['url']}\n"
+                if res.get("description"):
+                    content += f"**Description:** {res['description']}\n"
+                content += "\n"
+            return [TextContent(type="text", text=content)]
+
+        # status == success: read the page.
+        parsed = self.parser.parse_api_doc(result["html"], result["url"])
+        if "error" in parsed:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error parsing documentation: {parsed['error']}",
+                )
+            ]
+        content = f"# {result['title']}\n\n"
+        if annotation:
+            content += f"**Unity Version:** {version_name} ({annotation})\n"
+        else:
+            content += f"**Unity Version:** {version_name}\n"
+        content += f"**Source:** {result['url']}\n\n"
+        content += parsed["content"]
+        return [TextContent(type="text", text=content)]
+
     async def run(self):
         """Run the MCP server."""
         async with stdio_server() as (read_stream, write_stream):
@@ -376,12 +415,9 @@ class UnityDocsMCPServer:
 
 async def main():
     """Main entry point."""
-    # Print startup info to stderr (stdout is reserved for MCP protocol)
-    import sys
     import signal
     from . import __version__
 
-    # Setup graceful shutdown
     def signal_handler(signum, frame):
         print("🛑 Shutting down Unity Docs MCP Server...", file=sys.stderr)
         sys.exit(0)
@@ -389,20 +425,19 @@ async def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Get actual supported Unity versions
-    scraper = UnityDocScraper()
-    supported_versions = scraper.get_supported_versions()
-    version_range = (
-        f"{supported_versions[-1]} - {supported_versions[0]}"
-        if supported_versions
-        else "Unknown"
-    )
-
     print(f"🚀 Unity Docs MCP Server v{__version__}", file=sys.stderr)
-    print(f"📚 Supporting Unity versions {version_range}", file=sys.stderr)
-    print("💾 Advanced caching enabled (6h API + 24h search index)", file=sys.stderr)
+    print("📚 Offline mode - reading local Unity installation docs", file=sys.stderr)
+    scraper = UnityDocScraper(editor_root=os.environ.get("UNITY_HUB_EDITOR_DIR"))
+    if scraper.installed:
+        versions = ", ".join(scraper.get_supported_versions())
+        print(f"📦 Installed Unity versions: {versions}", file=sys.stderr)
+    else:
+        print(
+            "⚠️ No local Unity documentation found. Run `unity-docs-mcp start` to set up.",
+            file=sys.stderr,
+        )
     print("🔌 Starting MCP server...", file=sys.stderr)
-    print("", file=sys.stderr)  # Empty line
+    print("", file=sys.stderr)
 
     try:
         server = UnityDocsMCPServer()
@@ -419,9 +454,6 @@ def cli_main():
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        # Handle Ctrl+C at the top level to avoid stack trace
-        import sys
-
         print("🛑 Shutting down Unity Docs MCP Server...", file=sys.stderr)
         sys.exit(0)
 

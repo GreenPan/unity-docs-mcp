@@ -2,13 +2,14 @@
 
 ## 📋 Project Overview
 
-**Purpose**: A server that retrieves Unity official API documentation via MCP (Model Context Protocol) and provides it in clean Markdown format
+**Purpose**: An MCP (Model Context Protocol) server that reads Unity API documentation from **locally installed editors** (fully offline) and provides it in clean Markdown format.
 
 **Key Features**:
-- Retrieve Unity API documentation (classes, methods)
-- Document search functionality
-- Multiple Unity version support
+- Read Unity API documentation (classes, methods) from local disk
+- Full-text document search (SQLite FTS5 over page bodies)
+- Exact matching against installed Unity versions
 - Clean text output (UI elements and formatting removed)
+- One-command setup (`start`) that builds the index and wires up 6 AI tools
 
 ## 🏗️ Architecture
 
@@ -16,19 +17,24 @@
 ```
 unity-docs-mcp/
 ├── src/unity_docs_mcp/
-│   ├── __init__.py
-│   ├── server.py          # MCP server main (UnityDocsMCPServer)
-│   ├── scraper.py         # Web scraping (UnityDocScraper)
-│   ├── parser.py          # HTML parsing & cleaning (UnityDocParser)
-│   └── search_index.py    # Local search index (UnitySearchIndex)
+│   ├── __init__.py           # Version
+│   ├── server.py             # MCP server (UnityDocsMCPServer)
+│   ├── scraper.py            # Local doc reader (UnityDocScraper)
+│   ├── parser.py             # HTML parsing & cleaning (UnityDocParser)
+│   ├── search_index.py       # SQLite FTS5 search index (UnitySearchIndex)
+│   ├── version_resolver.py   # Version discovery & resolution
+│   ├── mcp_config.py         # Writes configs for AI tools
+│   └── cli.py                # `unity-docs-mcp start` / `changesource`
 ├── tests/
-│   ├── test_*.py          # Unit tests
-│   └── test_search_index.py # Search index tests
-├── pyproject.toml         # Dependencies & project config
-├── config.json           # MCP Inspector config
-├── start_inspector.sh    # Launch script
-├── CLAUDE.md            # Project-specific instructions
-└── venv/                # Python virtual environment
+│   ├── test_*.py             # Unit tests
+│   └── helpers.py            # Fake Unity install fixture
+├── pyproject.toml            # Dependencies & project config
+└── config.json               # Manual MCP config reference (Windows paths)
+```
+
+### Runtime Data
+```
+~/.unity_docs_mcp/db/search_{version}.db   # SQLite FTS5 index per installed version
 ```
 
 ### Core Components
@@ -37,23 +43,32 @@ unity-docs-mcp/
 ```python
 class UnityDocsMCPServer:
     # MCP tools:
-    - list_unity_versions()      # Supported Unity versions
+    - list_unity_versions()      # Installed Unity versions
     - suggest_unity_classes()    # Class name suggestions
     - get_unity_api_doc()       # Get API documentation
-    - search_unity_docs()       # Search documentation
+    - search_unity_docs()       # Search the API reference (kind='api')
+    - get_unity_manual_doc()    # Read/search a Manual page
 ```
+Versions are resolved via `scraper.resolve_version()`. An uninstalled requested
+version falls back to the newest installed with a note (`6000.0 not installed;
+using 6000.5.7f1`); the `**Source:**` field is a local absolute path.
 
-#### 2. **scraper.py** - Web Scraper
+#### 2. **scraper.py** - Local Documentation Reader
 ```python
 class UnityDocScraper:
-    # Fetches HTML from Unity docs
-    - get_api_doc(class_name, method_name, version)
-    - search_docs(query, version)  # Now uses search_index
-    - suggest_class_names(partial)  # Uses search_index
-    - URL patterns:
-      - Methods: https://docs.unity3d.com/{version}/Documentation/ScriptReference/{Class}.{method}.html
-      - Properties: https://docs.unity3d.com/{version}/Documentation/ScriptReference/{Class}-{property}.html
-      - Automatic fallback: Tries dot notation first, then hyphen for properties
+    # editor_root resolution: arg > UNITY_HUB_EDITOR_DIR env > default Hub path
+    - resolve_version(version)         # None -> newest; prefix match
+    - get_api_doc(class, method, version)
+    - search_docs(query, version)      # delegates to search_index(kind='api')
+    - get_manual_doc(page_query, version)  # exact page, else Manual search
+    - suggest_class_names(partial)     # delegates to search_index
+    - check_api_availability_across_versions()  # local file existence
+    # Page name patterns (same as Unity's site):
+    #   Class:     {Class}.html
+    #   Method:    {Class}.{method}.html        (dot notation)
+    #   Property:  {Class}-{property}.html      (hyphen notation)
+    #   Manual:    {slug}.html                  (may contain subdirs)
+    # Automatic fallback: try dot, then hyphen.
 ```
 
 #### 3. **parser.py** - HTML Parser
@@ -67,19 +82,62 @@ class UnityDocParser:
     5. _remove_markdown_formatting() # Remove bold, links
 ```
 
-#### 4. **search_index.py** - Local Search Index
+#### 4. **search_index.py** - SQLite FTS5 Search Index
 ```python
 class UnitySearchIndex:
-    # Downloads and caches Unity's search index
-    - load_index(version, force_refresh)  # Load index from cache or download
-    - search(query, version, max_results) # Search using local index
-    - suggest_classes(partial_name)       # Suggest class names
-    - clear_cache(version)                # Clear cached index
-    
-    # Cache management:
-    - File cache: ~/.unity_docs_mcp/cache/search_index_{version}.pkl
-    - Memory cache: For current session
-    - Expiration: 24 hours by default
+    - ensure_index(version, force)   # Validate meta, build if needed
+    - build_index(version, progress) # API + Manual pages, parallel body extraction
+    - search(query, version, max_results, kind)  # FTS5 MATCH + bm25, class-boosted
+    - suggest_classes(partial_name)  # prefix + member_type='class'
+    - get_page_name(query, version)  # API namespace resolution
+    - get_manual_page(page_query, version)  # Manual slug/title resolution
+    - clear_cache(version)           # delete a version's db
+    # Schema per version:
+    #   meta  (version, page_count, built_at, source_dir)
+    #   pages (id, name, title, member_type, path, kind)  # kind: 'api' | 'manual'
+    #   ft    (FTS5: name, title, description, content)
+```
+`build_index` parses both `ScriptReference/docdata` and `Manual/docdata`
+(`index.json`, fallback `index.js`), indexing both into the one FTS5 db.
+`member_type` distinguishes class / method / property / constructor via the
+hyphen/dot naming rules plus whether the dotted base is a known class
+(e.g. `Object.GetInstanceID` → method, `AI.NavMeshAgent` → class). Indexing is
+lazy (`ensure_index` on first query) and explicitly triggered by `start`/`changesource`.
+The db is rebuilt automatically when the `source_dir` in meta no longer matches
+or the schema is outdated (no `kind` column).
+
+#### 5. **version_resolver.py** - Version Model
+```python
+@dataclass InstalledVersion: name, editor_dir, docs_dir, version_key
+parse_unity_version("6000.5.7f1") -> (6000, 5, 7, type_rank, build, revision)
+discover_versions(editor_root)     # scans Hub Editor dir, newest first
+resolve_version(version, installed) # None->newest, exact, prefix, else None
+default_editor_root()              # platform default Hub path
+```
+Different major.minor versions that aren't installed fall back to the newest
+installed version (with a note) rather than erroring.
+
+#### 6. **mcp_config.py** - Tool Configuration
+```python
+write_all(editor_root, python_exe, project_dir, tools) -> {tool: status}
+```
+Writes the same stdio server entry (`command` = venv python, `args = ["-m", "unity_docs_mcp.server"]`, `env = {"UNITY_HUB_EDITOR_DIR": editor_root}`) into:
+
+| Tool | Config file | Key |
+|---|---|---|
+| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
+| Claude Code | `{project}/.mcp.json` | `mcpServers` |
+| Cursor | `{project}/.cursor/mcp.json` | `mcpServers` |
+| VS Code (Copilot) | `{project}/.vscode/mcp.json` | `servers` (`type: stdio`) |
+| OpenCode | `{project}/opencode.json` | `mcp` (`type: local`, array command) |
+| Codex | `~/.codex/config.toml` | `[mcp_servers.unity-docs]` |
+
+JSON configs are read-merge-written (other entries preserved, `.bak` backup). Codex TOML is edited as text so existing tables survive.
+
+#### 7. **cli.py** - Commands
+```bash
+unity-docs-mcp start          # locate editor -> build index -> write configs
+unity-docs-mcp changesource   # new editor -> rebuild index -> refresh configs
 ```
 
 ## 🔧 Key Dependencies
@@ -87,38 +145,26 @@ class UnitySearchIndex:
 ```toml
 dependencies = [
     "mcp>=1.0.0",              # MCP protocol
-    "requests>=2.31.0",        # HTTP requests
     "beautifulsoup4>=4.12.0",  # HTML parsing
     "trafilatura>=1.8.0",      # Content extraction
-    "lxml>=4.9.0",            # XML/HTML processing
-    "markdownify>=0.11.6",    # HTML to Markdown conversion
+    "lxml>=4.9.0",             # XML/HTML processing
+    "markdownify>=0.11.6",     # HTML to Markdown conversion
 ]
 ```
+`sqlite3` (FTS5) is the Python standard library — no network libraries are used.
 
 ## 🐛 Problems & Solutions
 
-### Problem 0: Search Page JavaScript Execution
-**Symptom**: Unity search page returns "Searching Script Reference, please wait." with loading spinner
-
-**Cause**: Unity's search page uses JavaScript to dynamically load results from a local index
-
-**Solution**: Download and use Unity's JavaScript search index directly
-```python
-# Download index.js from Unity docs
-# Parse JavaScript variables: pages, info, searchIndex, common
-# Implement search logic in Python
-# Cache the index for performance
-```
+### Problem 0: No Online Documentation
+The old server scraped `docs.unity3d.com`. This project is now fully offline: docs come from the local `.../Editor/Data/Documentation/en/` tree shipped with each installed editor.
 
 ### Problem 1: Code Bracket Issues
-**Symptom**: 
+**Symptom**:
 ```csharp
-public class Example :[MonoBehaviour]{ 
+public class Example :[MonoBehaviour]{
     private[GameObject][] cubes = new[GameObject][10];
 ```
-
 **Cause**: HTML `<a>` tags are converted to `[text]` format by Trafilatura
-
 **Solution**: Remove link tags at HTML level before processing
 ```python
 for link in soup.find_all('a'):
@@ -126,48 +172,27 @@ for link in soup.find_all('a'):
 ```
 
 ### Problem 2: UI Elements in Content
-**Symptom**: "Leave feedback", "Success!", "Submission failed" mixed into API documentation
-
-**Solution**: Remove specific UI elements
-```python
-feedback_text_patterns = [
-    'Leave feedback', 'Suggest a change', 'Success!', 
-    'Thank you for helping us improve', 'Submission failed'
-]
-```
+Remove feedback/UI text like "Leave feedback", "Success!", "Submission failed".
 
 ### Problem 3: Bold Formatting
-**Symptom**: Bold formatting like `**GameObject[]**`
-
-**Solution**: Remove HTML `<strong>`/`<b>` tags and Markdown `**`
+Remove `<strong>`/`<b>` tags and Markdown `**`.
 
 ### Problem 4: Markdown Links
-**Symptom**: `[ComputeBuffer](ComputeBuffer.html)` remains in parameters
+Remove leftover `[text](url)` with regex.
 
-**Solution**: Remove Markdown links with regex
-```python
-content = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', content)
-```
-
-### Problem 5: Property vs Method URL Patterns
-**Symptom**: `ContactPoint2D.otherRigidbody` returns 404 error
-
-**Cause**: Unity uses different URL patterns for properties vs methods
+### Problem 5: Property vs Method Page Names
 - Methods use dot notation: `GameObject.SetActive.html`
 - Properties use hyphen notation: `GameObject-transform.html`
-
-**Solution**: Automatic fallback mechanism
-```python
-# First try dot notation (for methods)
-url = build_api_url(class_name, method_name)  # GameObject.SetActive.html
-if not found and method_name:
-    # Try hyphen notation (for properties)
-    url = build_api_url(class_name, method_name, use_hyphen=True)  # GameObject-transform.html
-```
+- Automatic fallback tries dot then hyphen.
 
 ## 🚀 Launch & Test
 
-### Start MCP Inspector
+### Build index + configure tools
+```bash
+unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
+```
+
+### MCP Inspector
 ```bash
 ./start_inspector.sh
 # Opens http://localhost:6274
@@ -175,88 +200,46 @@ if not found and method_name:
 
 ### Test Examples
 ```json
-// Get GameObject documentation
-{"class_name": "GameObject", "version": "6000.0"}
+// Get GameObject documentation (latest installed version)
+{"class_name": "GameObject"}
 
-// Get specific method
-{"class_name": "GameObject", "method_name": "SetActive", "version": "6000.0"}
+// Get specific method with prefix version
+{"class_name": "GameObject", "method_name": "SetActive", "version": "6000.5"}
 
-// Search documentation
-{"query": "transform", "version": "6000.0"}
+// Search documentation (full-text, includes body text)
+{"query": "transform", "version": "6000.5"}
 
 // Get class suggestions
 {"partial_name": "game"}
+
+// Uninstalled version -> falls back to newest installed with a note
+{"class_name": "AsyncGPUReadback", "version": "6000.0"}
 ```
 
-### Direct Python Test
-```python
-source venv/bin/activate
-python test_mcp_tools.py
+### Run tests
+```bash
+python -m unittest discover tests/
 ```
 
 ## 💡 Critical Insights
 
-1. **Trafilatura's `include_links=False` is not enough**
-   - Only removes URL part `(url)`, leaves `[text]`
-   - Must remove `<a>` tags at HTML level
-
-2. **Processing Order Matters**
-   ```
-   HTML → Remove Links → Remove UI → Trafilatura → Clean Code → Remove Formatting
-   ```
-
-3. **Unity HTML Structure**
-   - Main content: `#content-wrap .content`
-   - Code examples contain many inline links
-   - Feedback forms embedded throughout
-
-4. **Search Index Structure**
-   ```javascript
-   var pages = [["ClassName", "Class Title"], ...];
-   var info = [["Description", type_id], ...];
-   var searchIndex = {"term": [page_indices], ...};
-   var common = {"the": 1, "is": 1, ...};  // Words to ignore
-   ```
-
-5. **Search Algorithm**
-   - Exact match: 5.0 points
-   - Prefix match: 3.0 points 
-   - Substring match: 1.0 point
-   - Common words are ignored
-   - Combined terms (no spaces) are also searched
-
-6. **Virtual Environment Required**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # or venv/bin/activate.fish
-   pip install -e .
-   ```
-
-## 🔍 Debugging Tips
-
-1. **Check inspector.log** for MCP connection issues
-2. **Test scraper directly** with `python test_server.py`
-3. **Save problematic HTML** with `debug_gameobject.html`
-4. **Kill stuck processes**: 
-   ```bash
-   pkill -f mcp-inspector
-   lsof -ti :6274 :6277 | xargs kill -9
-   ```
+1. **Fully offline** — data source is the local install, not the network. `UNITY_HUB_EDITOR_DIR` points the server at the Hub Editor root.
+2. **FTS5 full-text index** — searches match page **bodies**, not just titles/descriptions. Indexes live in `~/.unity_docs_mcp/db/`.
+3. **Lazy build** — `ensure_index` validates the `meta` table and builds only when missing or stale (`source_dir` mismatch).
+4. **Version model** — full install dirs (`6000.5.7f1`) are the source of truth; prefix matching resolves user input; uninstalled versions error.
+5. **Config safety** — read-merge-write preserves other entries, `.bak` backups, Codex TOML edited as text.
+6. **Windows paths** — search-result `path` uses forward slashes (`as_posix()`); file reads use `normpath`.
 
 ## 📝 Future Improvements
 
-1. Cache Unity docs locally
-2. Add more Unity versions
-3. Support for Unity Package docs
-4. Offline mode
-5. Better error messages
+1. Support Unity Package docs
+2. Incremental index updates (delta builds)
 
 ## ⚠️ Important Notes
 
 - **Always activate venv** before running
-- **MCP Inspector auth disabled** with `DANGEROUSLY_OMIT_AUTH=true`
-- **Ports used**: 6274 (web UI), 6277 (proxy)
-- **Python 3.8+** required
+- **MCP Inspector ports**: 6274 (web UI), 6277 (proxy)
+- **Python 3.10+** required
 
 ---
 
@@ -266,26 +249,10 @@ python test_mcp_tools.py
 
 ### File Locations
 - **Main server**: `src/unity_docs_mcp/server.py`
-- **HTML scraper**: `src/unity_docs_mcp/scraper.py`
+- **Local doc reader**: `src/unity_docs_mcp/scraper.py`
 - **Parser/cleaner**: `src/unity_docs_mcp/parser.py`
 - **Search index**: `src/unity_docs_mcp/search_index.py`
-- **Test script**: `test_mcp_tools.py`
-- **Inspector script**: `start_inspector.sh`
-- **Cache directory**: `~/.unity_docs_mcp/cache/`
-
-### Key Functions
-```python
-# parser.py - Processing pipeline
-_remove_link_tags()           # Must be FIRST!
-_remove_unity_ui_elements()   # Remove feedback UI
-trafilatura.extract()         # Extract content
-_clean_trafilatura_content()  # Fix code formatting
-_remove_markdown_formatting() # Remove bold, links
-```
-
-### Test URL Examples
-- Class: `https://docs.unity3d.com/6000.0/Documentation/ScriptReference/GameObject.html`
-- Method: `https://docs.unity3d.com/6000.0/Documentation/ScriptReference/GameObject.SetActive.html`
-- Property: `https://docs.unity3d.com/6000.0/Documentation/ScriptReference/GameObject-transform.html`
-- Search Index: `https://docs.unity3d.com/6000.0/Documentation/ScriptReference/docdata/index.js`
-- ~~Search Page~~: `https://docs.unity3d.com/6000.0/Documentation/ScriptReference/30_search.html?q=transform` (Not used anymore)
+- **Version resolution**: `src/unity_docs_mcp/version_resolver.py`
+- **Config writer**: `src/unity_docs_mcp/mcp_config.py`
+- **CLI**: `src/unity_docs_mcp/cli.py`
+- **Index databases**: `~/.unity_docs_mcp/db/`

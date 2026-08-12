@@ -4,7 +4,6 @@
 import sys
 import os
 import unittest
-import coverage
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -12,6 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 def run_tests_with_coverage():
     """Run tests with coverage reporting."""
+    import coverage
+
     # Initialize coverage
     cov = coverage.Coverage(source=['src/unity_docs_mcp'])
     cov.start()

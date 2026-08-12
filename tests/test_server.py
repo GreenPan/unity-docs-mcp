@@ -67,21 +67,35 @@ class TestUnityDocsMCPServer(unittest.TestCase):
         self.assertIn("https://docs.unity3d.com", content)
 
     @patch("unity_docs_mcp.server.UnityDocScraper")
-    async def test_get_unity_api_doc_invalid_version(self, mock_scraper_class):
-        """Test API documentation retrieval with invalid version."""
+    async def test_get_unity_api_doc_uninstalled_falls_back(self, mock_scraper_class):
+        """An uninstalled version falls back to the newest installed with a note."""
         mock_scraper = Mock()
         mock_scraper_class.return_value = mock_scraper
-        mock_scraper.validate_version.return_value = False
-        mock_scraper.get_supported_versions.return_value = ["6000.0", "2023.3"]
+        mock_scraper.installed = [Mock()]
+        # "invalid" doesn't resolve; newest installed (6000.5.7f1) is returned.
+        resolved = Mock()
+        resolved.name = "6000.5.7f1"
+        mock_scraper.resolve_version.side_effect = lambda v: (None if v == "invalid" else resolved)
+        mock_scraper.get_api_doc.return_value = {
+            "status": "success",
+            "html": "<html>GameObject</html>",
+            "url": "C:/docs/GameObject.html",
+        }
+        mock_scraper.search_docs.return_value = {"status": "success", "results": []}
 
         server = UnityDocsMCPServer()
         server.scraper = mock_scraper
-
-        result = await server._get_unity_api_doc("GameObject", None, "invalid")
+        with patch.object(server.parser, "parse_api_doc") as mock_parse:
+            mock_parse.return_value = {
+                "title": "GameObject",
+                "content": "Content",
+                "url": "C:/docs/GameObject.html",
+            }
+            result = await server._get_unity_api_doc("GameObject", None, "invalid")
 
         self.assertEqual(len(result), 1)
-        self.assertIn("Unsupported Unity version", result[0].text)
-        self.assertIn("6000.0, 2023.3", result[0].text)
+        self.assertIn("invalid not installed; using 6000.5.7f1", result[0].text)
+        self.assertNotIn("Error", result[0].text)
 
     @patch("unity_docs_mcp.server.UnityDocScraper")
     async def test_get_unity_api_doc_scraper_error(self, mock_scraper_class):
@@ -224,6 +238,80 @@ class TestUnityDocsMCPServer(unittest.TestCase):
         self.assertIn("Class Suggestions", content)
         self.assertIn("GameObject", content)
         self.assertIn("GameObjectUtility", content)
+
+    @patch("unity_docs_mcp.server.UnityDocScraper")
+    @patch("unity_docs_mcp.server.UnityDocParser")
+    async def test_get_unity_manual_doc_success(
+        self, mock_parser_class, mock_scraper_class
+    ):
+        """Reading a concrete manual page."""
+        mock_scraper = Mock()
+        mock_scraper_class.return_value = mock_scraper
+        resolved = Mock()
+        resolved.name = "6000.5.7f1"
+        mock_scraper.installed = [Mock()]
+        mock_scraper.resolve_version.return_value = resolved
+        mock_scraper.get_manual_doc.return_value = {
+            "status": "success",
+            "html": "<html>URP content</html>",
+            "url": "C:/docs/Manual/urp/urp-introduction.html",
+            "title": "Universal Render Pipeline introduction",
+        }
+        mock_parser = Mock()
+        mock_parser_class.return_value = mock_parser
+        mock_parser.parse_api_doc.return_value = {
+            "title": "Universal Render Pipeline introduction",
+            "content": "URP is a Scriptable Render Pipeline.",
+            "url": "C:/docs/Manual/urp/urp-introduction.html",
+        }
+
+        server = UnityDocsMCPServer()
+        server.scraper = mock_scraper
+        server.parser = mock_parser
+
+        result = await server._get_unity_manual_doc("urp/urp-introduction", "6000.5")
+
+        self.assertEqual(len(result), 1)
+        content = result[0].text
+        self.assertIn("Universal Render Pipeline introduction", content)
+        self.assertIn("URP is a Scriptable Render Pipeline.", content)
+        self.assertIn("6000.5.7f1", content)
+        self.assertIn("**Source:**", content)
+
+    @patch("unity_docs_mcp.server.UnityDocScraper")
+    async def test_get_unity_manual_doc_search_fallback(self, mock_scraper_class):
+        """When the page isn't found, the server returns manual search results."""
+        mock_scraper = Mock()
+        mock_scraper_class.return_value = mock_scraper
+        resolved = Mock()
+        resolved.name = "6000.5.7f1"
+        mock_scraper.installed = [Mock()]
+        mock_scraper.resolve_version.return_value = resolved
+        mock_scraper.get_manual_doc.return_value = {
+            "status": "search",
+            "query": "navmesh",
+            "results": [
+                {
+                    "title": "Navigation and Pathfinding",
+                    "name": "navigation-and-pathfinding",
+                    "url": "C:/docs/Manual/navigation-and-pathfinding.html",
+                    "description": "Use NavMesh for navigation.",
+                    "type": "manual",
+                }
+            ],
+            "count": 1,
+        }
+
+        server = UnityDocsMCPServer()
+        server.scraper = mock_scraper
+
+        result = await server._get_unity_manual_doc("navmesh", "6000.5")
+
+        self.assertEqual(len(result), 1)
+        content = result[0].text
+        self.assertIn("Unity Manual Search Results", content)
+        self.assertIn("Navigation and Pathfinding", content)
+        self.assertIn("get_unity_manual_doc(page:", content)
 
 
 def run_async_test(test_func):

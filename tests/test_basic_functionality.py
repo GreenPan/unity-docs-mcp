@@ -37,6 +37,31 @@ class TestBasicFunctionality(unittest.TestCase):
         results = index.search("GameObject", "6000.0", max_results=5)
         self.assertIsInstance(results, list)
 
+    def test_full_text_body_search(self):
+        """Search hits words that only appear in page bodies, not titles."""
+        import os
+        import shutil
+        import tempfile
+
+        from unity_docs_mcp.search_index import UnitySearchIndex
+        from tests.helpers import make_fake_unity_install
+
+        tmp = tempfile.mkdtemp()
+        try:
+            _root, created = make_fake_unity_install(tmp, ["6000.5.7f1"])
+            docs_dirs = {c["version"]: c["docs_dir"] for c in created}
+            index = UnitySearchIndex(
+                docs_dirs=docs_dirs, db_dir=os.path.join(tmp, "db")
+            )
+            self.assertTrue(index.ensure_index("6000.5.7f1"))
+            # "pathfinding" appears only in AI.NavMeshAgent's body.
+            results = index.search("pathfinding", version="6000.5.7f1")
+            titles = [r["title"] for r in results]
+            self.assertIn("AI.NavMeshAgent", titles)
+        finally:
+            index.close()
+            shutil.rmtree(tmp)
+
 
 if __name__ == "__main__":
     unittest.main()

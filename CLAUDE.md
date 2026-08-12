@@ -19,40 +19,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - Root: User-facing (README.md, CLAUDE.md, LICENSE)
    - docs/: Technical and detailed documentation
 
-## Unity Docs MCP Server v0.2.2 - Development Guide
+## Unity Docs MCP Server v0.3.0 - Development Guide
 
 ### Commands
 
 **Testing & Development**:
 ```bash
-# Start MCP Inspector for interactive testing
-./start_inspector.sh
-
-# Run full test suite with coverage
+# Run full test suite
 python run_tests.py
 
-# Direct test without Inspector
-source venv/bin/activate && python test_mcp_tools.py
+# Run tests directly (no Inspector needed)
+source venv/bin/activate && python -m unittest discover tests/
 
-# Validate project structure
-python validate_structure.py
+# Build the offline index + write MCP configs for AI tools
+unity-docs-mcp start --editor-root "C:\Program Files\Unity\Hub\Editor"
 
-# Install development dependencies
-pip install -e .
+# Switch to a different Unity install (rebuild index + refresh configs)
+unity-docs-mcp changesource --editor-root "D:\NewUnity\Hub\Editor"
 ```
 
 **Running the Server**:
 ```bash
-# Via entry point (after installation) - shows startup info
+# Via entry point (after installation) - starts the stdio MCP server
 unity-docs-mcp
-# Output:
-# 🚀 Unity Docs MCP Server v0.2.1
-# 📚 Supporting Unity versions 2019.1 - 6000.2
-# 💾 Advanced caching enabled (6h API + 24h search index)
+# Output (stderr):
+# 🚀 Unity Docs MCP Server v0.3.0
+# 📚 Offline mode - reading local Unity installation docs
+# 📦 Installed Unity versions: 6000.5.7f1
 # 🔌 Starting MCP server...
-
-# IMPORTANT: For Claude Desktop, use the full path to avoid "module not found" errors:
-# /path/to/unity-docs-mcp/venv/bin/unity-docs-mcp
 
 # Direct module execution
 python -m unity_docs_mcp.server
@@ -60,56 +54,67 @@ python -m unity_docs_mcp.server
 
 ### Architecture Overview
 
-The project consists of four main modules that process Unity documentation:
+The project consists of seven main modules that process local Unity documentation:
 
-1. **server.py** - MCP server implementation providing 4 tools:
-   - `list_unity_versions` - Lists supported Unity versions
-   - `suggest_unity_classes` - Provides class name suggestions  
-   - `get_unity_api_doc` - Fetches API documentation for **exact version only**
-   - `search_unity_docs` - Searches Unity documentation in specified version
+1. **server.py** - MCP server implementation providing 5 tools:
+   - `list_unity_versions` - Lists **installed** Unity versions
+   - `suggest_unity_classes` - Provides class name suggestions
+   - `get_unity_api_doc` - Reads API documentation for a resolved local version
+   - `search_unity_docs` - Searches local API docs (SQLite FTS5) in a specified version
+   - `get_unity_manual_doc` - Reads a Manual page, or searches the Manual
 
-2. **scraper.py** - Handles web requests to Unity's documentation site:
-   - Implements rate limiting (0.5s between requests)
-   - Builds URLs for API docs
-   - Validates Unity versions
-   - **Advanced caching system for API availability checks (6-hour cache)**
-   - **Uses search_index.py for search instead of web scraping**
+2. **scraper.py** - Local documentation reader (fully offline):
+   - Resolves editor root: arg > `UNITY_HUB_EDITOR_DIR` env > platform default
+   - Resolves versions against installed editors (prefix matching)
+   - Reads local HTML files (no network, no rate limiting)
+   - Uses search_index.py for search and namespace resolution
 
 3. **parser.py** - Critical HTML processing pipeline:
    - **MUST remove `<a>` tags BEFORE Trafilatura** (prevents bracket issues)
    - Removes Unity UI elements (feedback forms, etc.)
    - Converts to clean Markdown
 
-4. **search_index.py** - Local search index implementation:
-   - Downloads and caches Unity's JavaScript search index per version
-   - Each version has its own index file and cache (24-hour cache)
-   - Implements client-side search logic in Python
-   - Provides fast, reliable search without JavaScript execution
+4. **search_index.py** - SQLite FTS5 full-text index:
+   - Per-version persistent index at `~/.unity_docs_mcp/db/search_{version}.db`
+   - `ensure_index(version)` validates meta, builds lazily if missing
+   - `build_index(version, progress)` parses `docdata/index.json` for **both**
+     ScriptReference and Manual, extracts page bodies in parallel
+   - `pages.kind` distinguishes `api` vs `manual` rows; `search(kind=...)` filters
+   - Search matches **page bodies** (stronger than Unity's title/description search)
+   - Index auto-rebuilds when the docs source dir moves (`source_dir` in meta) or the schema is outdated
+
+5. **version_resolver.py** - Version model for local installs:
+   - `parse_unity_version` / `discover_versions` / `resolve_version` / `default_editor_root`
+   - Full install dir names (`6000.5.7f1`) are the source of truth
+   - Prefix matching (`6000.5` → `6000.5.7f1`); uninstalled versions error
+
+6. **mcp_config.py** - Writes MCP configs for 6 AI tools:
+   - Claude Desktop, Claude Code (`.mcp.json`), Cursor, VS Code (Copilot),
+     OpenCode, Codex
+   - Read-merge-write JSON (preserves other entries, `.bak` backup); Codex TOML edited as text
+
+7. **cli.py** - Entry point: `start` (build index + write configs) / `changesource` (new dir → rebuild + refresh)
 
 ### Version-Specific Behavior
 
-**Important**: The MCP server provides intelligent version handling:
+**Important**: The MCP server handles **locally installed** Unity versions:
 
-#### Version Normalization
-- **Automatic normalization**: `6000.0.29f1` → `6000.0`, `2022.3.45f1` → `2022.3`
-- **Full version support**: Accepts any Unity version format (alpha, beta, final)
-- **Transparent conversion**: Shows original and normalized versions in results
-
-#### Dynamic Latest Version Detection
-- **Smart defaults**: When no version specified, automatically uses latest available
-- **Unity redirect detection**: Leverages Unity's own version redirection
-- **No maintenance required**: Always up-to-date with Unity releases
+#### Version Resolution
+- **Fallback**: an uninstalled requested version (different major.minor) falls back to the newest installed, with a note like `6000.0 not installed; using 6000.5.7f1`
+- **Prefix matching**: `6000` / `6000.5` / `6000.5.7` all resolve to installed `6000.5.7f1`
+- **Newest default**: when no version specified, uses the newest installed
+- **No network**: there is no online version list and no "latest from Unity"
 
 #### Version Availability Information
-- **404 with context**: When API not found, shows which versions have it
-- **Cross-version checking**: Fast HEAD requests to determine availability with intelligent caching
-- **Helpful suggestions**: "Available in versions: 6000.0, 2022.3" for upgrade decisions
-- **Performance optimized**: API availability checks are cached for 6 hours to minimize web requests
+- **404 with context**: when an API is not found, shows which installed versions have it
+- **Local checking**: checks file existence per installed version (no HEAD requests)
+- **Helpful suggestions**: "Available in versions: 6000.5.7f1" for upgrade decisions
+- **No caching of version lists**: versions come from the local install each time
 
-#### Strict Version Accuracy
-- **No fallback**: Searches only in the exact specified (normalized) version
-- **Clear error messages**: Precise information about version availability
-- **User control**: Developers get docs for their exact Unity version
+#### Index/Docs Consistency
+- **source_dir recorded in meta**: each db remembers the docs dir it was built from
+- **Auto-rebuild on mismatch**: when the docs move, `ensure_index` rebuilds and warns to run `changesource`
+- **User control**: developers get docs for their exact installed Unity version; uninstalled requests degrade gracefully
 
 ### Critical Implementation Details
 
@@ -126,12 +131,12 @@ The project consists of four main modules that process Unity documentation:
 - **UI elements**: "Leave feedback" → Remove with `_remove_unity_ui_elements()`
 - **Bold text**: `**text**` → Remove `<strong>`, `<b>` tags and markdown formatting
 - **Markdown links**: `[ComputeBuffer](ComputeBuffer.html)` → Strip with regex
-- **Search waiting page**: Unity search page loads dynamically → Use local search index instead
+- **Local-only search**: docs come from the local install; `UNITY_HUB_EDITOR_DIR` points the server at the Hub Editor root
 
 ### Development Workflow
 
 **Before Committing:**
-1. Run tests: `./run_tests.sh`
+1. Run tests: `python -m unittest discover tests/`
 2. Pre-commit hook automatically runs basic tests
 3. Check for IndentationError and import issues
 
@@ -140,8 +145,8 @@ The project consists of four main modules that process Unity documentation:
 # Test with problematic class names
 test_cases = ["NavMeshAgent", "Button", "Text", "Canvas"]
 for case in test_cases:
-    result = scraper.get_api_doc(case, version="6000.0")
-    # Should find AI.NavMeshAgent, UIElements.Button, etc.
+    result = scraper.get_api_doc(case, version="6000.5")  # your installed version
+    # Should resolve AI.NavMeshAgent, UI.Button, etc. via the local index
 ```
 
 ### Testing MCP Tools
@@ -149,105 +154,109 @@ for case in test_cases:
 Use the MCP Inspector to test tools with these example inputs:
 
 ```json
-// Get latest Unity documentation (auto-detects latest version)
+// Get latest installed Unity documentation
 {"class_name": "GameObject"}
 
-// Get documentation for specific full version (auto-normalizes)
-{"class_name": "GameObject", "version": "6000.0.29f1"}
+// Get documentation for a specific installed version (prefix match ok)
+{"class_name": "GameObject", "version": "6000.5"}
 
-// Get specific method with version normalization
-{"class_name": "GameObject", "method_name": "SetActive", "version": "2022.3.45f1"}
+// Get specific method
+{"class_name": "GameObject", "method_name": "SetActive", "version": "6000.5"}
 
-// Search in latest version (no version = latest)
+// Search in latest installed version
 {"query": "transform"}
 
-// Search in specific version with normalization
-{"query": "rigidbody physics", "version": "2021.3.12a1"}
+// Search in a specific installed version
+{"query": "rigidbody physics", "version": "6000.5"}
 
-// Get class suggestions (version independent)
+// Get class suggestions
 {"partial_name": "game"}
 
-// Test 404 with version availability info
-{"class_name": "AsyncGPUReadback", "version": "2019.4"}
+// Get a Manual page by slug / title, or search the Manual
+{"page": "urp/urp-introduction"}
+{"page": "navigation and pathfinding"}
+
+// Test fallback with installed-version availability info
+{"class_name": "AsyncGPUReadback", "version": "6000.0"}
 ```
 
 ### Supported Unity Versions
 
-The MCP server dynamically fetches supported Unity versions from Unity's official version info:
+The MCP server lists **locally installed** Unity versions (no network):
 
-#### Dynamic Version Detection
-- **Automatic Updates**: Fetches version list from Unity's `UnityVersionsInfo.js`
-- **No Manual Maintenance**: Version list updates automatically with Unity releases
-- **Intelligent Filtering**: Includes supported + recent versions (2019+), excludes very old versions
-- **Robust Fallback**: Uses hardcoded list if Unity's server is unavailable
+#### Local Version Detection
+- **Discoveries**: scans the Unity Hub Editor root for version dirs with a docs tree
+- **No Manual Maintenance**: version list updates automatically when you install new editors
+- **Prefix resolution**: `6000` / `6000.5` / `6000.5.7` all resolve to installed `6000.5.7f1`
+- **No fallback**: a different major.minor than installed is an error
 
-#### Current Supported Versions
-Based on Unity's official data (auto-updated):
-- **6000.x** (Unity 6.2 Beta, 6.1, 6.0)
-- **2023.x** (2023.2, 2023.1)
-- **2022.x** (2022.3 LTS, 2022.2, 2022.1)
-- **2021.x** (2021.3 LTS, 2021.2, 2021.1)
-- **2020.x** (2020.3, 2020.2, 2020.1)
-- **2019.x** (2019.4)
+#### Current Installed Versions
+Determined at runtime from your machine, e.g.:
+- **6000.5.7f1** (your installed Unity 6)
+- **2022.3.45f1** (your installed LTS)
 
 #### Version Support Features
 
-- **Dynamic Latest Detection**: Automatically detects and uses Unity's latest version when no version specified
-- **Full Version Normalization**: Supports complete version strings like `6000.0.29f1`, `2022.3.45a1`
-- **Format Flexibility**: Accepts any Unity version format (alpha, beta, final, patch versions)
-- **Zero Maintenance**: Both latest version detection and supported version list require no code maintenance
+- **Newest default**: no version specified → newest installed
+- **Prefix matching**: accepts `6000.5`, `6000`, full `6000.5.7f1`
+- **No network**: no online version list, no Unity redirects, no "latest from Unity"
 
 ### Enhanced Error Handling
 
-The MCP server provides intelligent error handling with version context:
+The MCP server provides error handling with installed-version context:
 
-1. **Version Availability Context**: When API not found, shows exactly which versions have it
-2. **Cross-Version Checking**: Fast HEAD requests to check API availability across major versions
-3. **Upgrade Guidance**: Provides specific version recommendations for missing APIs
-4. **Transparent Normalization**: Shows both original and normalized versions in responses
-5. **No Silent Failures**: Clear messaging about version compatibility issues
+1. **Availability Context**: when an API is not found, shows which installed versions have it
+2. **Local Checking**: checks file existence per installed version (no HEAD requests)
+3. **Upgrade Guidance**: lists installed versions for missing APIs
+4. **Transparent Resolution**: shows `6000.5.7f1 (from 6000.5)` when a prefix resolves
+5. **No Silent Failures**: clear messaging about version compatibility issues
 
 #### Example Error Output
 ```
-'AsyncGPUReadback' not found in Unity 2019.4 documentation.
+'AsyncGPUReadback' not found in Unity 6000.5.7f1 documentation.
 
-**Available in versions:** 6000.0, 2022.3, 2021.3
-**Not available in:** 2020.3, 2019.4
+**Available in versions:** 6000.5.7f1
+**Not available in:** 2022.3.45f1
 ```
 
 ### Project Structure
 
 ```
 src/unity_docs_mcp/
-├── server.py       # MCP server implementation
-├── scraper.py      # Web scraping logic with caching
-├── parser.py       # HTML parsing and cleaning
-└── search_index.py # Local search index handler
+├── server.py           # MCP server implementation
+├── scraper.py          # Local doc reader (offline)
+├── parser.py           # HTML parsing and cleaning
+├── search_index.py     # SQLite FTS5 search index
+├── version_resolver.py # Version discovery & resolution
+├── mcp_config.py       # Writes configs for 6 AI tools
+└── cli.py              # start / changesource commands
 
 tests/
-├── test_scraper.py       # Core scraper tests (41 tests)
-├── test_search_index.py  # Search functionality tests (15 tests)
-├── test_version_features.py # Version handling tests (11 tests)
-├── test_parser.py        # HTML parsing tests (9 tests)
-├── test_scraper_search.py # Search integration tests (8 tests)
-├── test_integration.py   # End-to-end tests (3 tests)
-└── test_server.py        # MCP server tests (1 test)
+├── helpers.py                 # Fake Unity install fixture
+├── test_version_resolver.py   # Version parsing/resolution
+├── test_search_index.py       # FTS5 index build/search
+├── test_scraper.py            # Local doc reader
+├── test_mcp_config.py         # Tool config writing
+├── test_cli.py                # start / changesource
+├── test_server.py             # MCP server tests
+├── test_integration.py        # End-to-end offline tests
+└── test_parser.py             # HTML parsing tests
 ```
 
 ### Testing
 
-The project includes comprehensive unit tests covering all version-related functionality:
+The project includes comprehensive unit tests covering all local/offline functionality:
 
 ```bash
 # Run all tests
 source venv/bin/activate && python -m unittest discover tests/
 
 # Run specific test modules
-python tests/test_scraper.py          # Core scraper functionality (41 tests)
-python tests/test_version_features.py # Version handling features (11 tests)
-python tests/test_search_index.py     # Search index functionality (15 tests)  
-python tests/test_parser.py           # HTML parsing functionality (9 tests)
-python tests/test_integration.py      # Integration tests (3 tests)
+python tests/test_version_resolver.py  # Version resolution (22 tests)
+python tests/test_search_index.py      # FTS5 search index
+python tests/test_scraper.py           # Local doc reader
+python tests/test_mcp_config.py        # Tool config writing
+python tests/test_cli.py               # CLI start/changesource
 
 # Run with coverage
 python run_tests.py
@@ -255,40 +264,37 @@ python run_tests.py
 
 #### Test Coverage
 
-- **Version Normalization**: Full Unity version format support (`6000.0.29f1` → `6000.0`)
-- **Dynamic Version Detection**: Latest Unity version auto-detection
-- **Dynamic Version List**: Unity's official version list fetching with fallback
-- **API Availability Checking**: Cross-version API existence verification with caching
-- **Error Handling**: Comprehensive error scenarios with version context
-- **Server Integration**: End-to-end MCP server functionality
-- **Mock Network Calls**: All external Unity API calls are mocked for reliability
-- **Caching Performance**: Validates 6-hour API availability cache functionality
-- **Caching Performance**: Validates 6-hour API availability cache functionality
+- **Version Resolution**: parsing, discovery, prefix matching, newest default
+- **FTS5 Index**: build, reuse, body-text search, index.js fallback
+- **Offline Scraper**: local reads, namespace resolution, availability by file existence
+- **Config Writing**: all 6 tools, merge preserves entries, .bak backups
+- **CLI**: start builds + writes, changesource refreshes, no-install non-zero
+- **Server Integration**: end-to-end offline workflow
+- **Zero Network**: all tests run against a fake local install (no Unity required)
 
-Total: **80 unit tests** ensuring robust functionality across all components.
+Total: **162 unit tests** ensuring robust offline functionality.
 
-### Performance & Caching
+### Performance & Storage
 
-The MCP server implements a comprehensive caching strategy to minimize web requests:
+The offline server persists a per-version SQLite FTS5 index:
 
-#### Multi-Level Caching System
-- **Search Index Cache**: 24-hour cache for Unity's search index files (per version)
-- **API Availability Cache**: 6-hour cache for cross-version API existence checks
-- **Memory Cache**: In-process caching for same-session requests
-- **File Cache**: Persistent cache stored in user's home directory (`~/.unity_docs_mcp/cache/`)
+#### Index Storage
+- **Search Index DB**: `~/.unity_docs_mcp/db/search_{version}.db` per installed version
+- **Lazy Build**: `ensure_index` validates meta, builds only when missing or stale
+- **Auto-Rebuild**: when the docs `source_dir` changes (changesource), the index rebuilds
+- **Full-Text**: indexes page **bodies** for stronger search than Unity's own
 
-#### Cache Benefits
-- **Dramatic Speed Improvement**: API availability checks go from 3+ seconds to <0.01 seconds
-- **Reduced Server Load**: Minimizes requests to Unity's documentation servers
-- **Offline Capability**: Previously cached data remains available during network issues
-- **Automatic Cleanup**: Cache files expire automatically to stay current
+#### Index Benefits
+- **Instant queries**: FTS5 MATCH + bm25 on local SQLite
+- **Zero network**: everything is read from disk
+- **Reuse**: built once per version, reused across restarts
+- **No legacy cache**: `~/.unity_docs_mcp/cache/` is no longer used for the index
 
-#### Cache Locations
+#### Index Locations
 ```
-~/.unity_docs_mcp/cache/
-├── search_index_6000.0.pkl      # Search index for Unity 6000.0
-├── search_index_2022.3.pkl      # Search index for Unity 2022.3
-└── api_availability_cache.pkl   # API availability results
+~/.unity_docs_mcp/db/
+├── search_6000.5.7f1.db   # FTS5 index for Unity 6000.5.7f1
+└── search_2022.3.45f1.db  # FTS5 index for Unity 2022.3.45f1
 ```
 
 ### Startup Information
@@ -296,9 +302,9 @@ The MCP server implements a comprehensive caching strategy to minimize web reque
 The server displays helpful information on startup (via stderr, safe for MCP protocol):
 
 ```
-🚀 Unity Docs MCP Server v0.2.1              # From __init__.py __version__
-📚 Supporting Unity versions 2019.1 - 6000.2  # Dynamically fetched from Unity
-💾 Advanced caching enabled (6h API + 24h search index)
+🚀 Unity Docs MCP Server v0.3.0          # From __init__.py __version__
+📚 Offline mode - reading local Unity installation docs
+📦 Installed Unity versions: 6000.5.7f1  # Discovered locally
 🔌 Starting MCP server...
 
 # When stopping with Ctrl+C (graceful shutdown):
@@ -309,8 +315,8 @@ The server displays helpful information on startup (via stderr, safe for MCP pro
 - **Graceful Shutdown**: Handles Ctrl+C (SIGINT) and SIGTERM signals cleanly
 - **No Stack Traces**: Signal trapping prevents ugly error output on exit
 - **Server Version**: Automatically reads from `src/unity_docs_mcp/__init__.py`
-- **Unity Versions**: Dynamically fetched from Unity's official version list
-- **No Hardcoding**: All version information updates automatically
+- **Unity Versions**: discovered from the local install (no network)
+- **No Hardcoding**: version info updates automatically from the local Hub root
 
 ### Important Notes
 

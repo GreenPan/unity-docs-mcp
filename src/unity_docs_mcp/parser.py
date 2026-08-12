@@ -88,33 +88,6 @@ class UnityDocParser:
         except Exception as e:
             return {"error": f"Failed to parse API documentation: {str(e)}"}
 
-    def parse_search_results(self, html_content: str) -> Dict[str, Any]:
-        """Parse Unity documentation search results."""
-        try:
-            soup = BeautifulSoup(html_content, "html.parser")
-
-            # Find search results container
-            results = []
-
-            # Look for search result elements (Unity uses different structures)
-            search_results = soup.find_all(
-                ["div", "li"], class_=re.compile(r"search|result")
-            )
-
-            if not search_results:
-                # Try alternative selectors
-                search_results = soup.find_all("a", href=re.compile(r"ScriptReference"))
-
-            for result in search_results[:20]:  # Limit to 20 results
-                result_data = self._extract_search_result(result)
-                if result_data:
-                    results.append(result_data)
-
-            return {"results": results, "count": len(results)}
-
-        except Exception as e:
-            return {"error": f"Failed to parse search results: {str(e)}"}
-
     def _extract_title(self, soup: BeautifulSoup) -> str:
         """Extract page title from HTML."""
         # Unity-specific title selectors
@@ -269,43 +242,6 @@ class UnityDocParser:
             metadata["inheritance"] = inheritance_elem.get_text(strip=True)
 
         return metadata
-
-    def _extract_search_result(self, result_elem) -> Optional[Dict[str, str]]:
-        """Extract data from a single search result element."""
-        try:
-            result_data = {}
-
-            # Extract title/link
-            link_elem = result_elem.find("a")
-            if link_elem:
-                result_data["title"] = link_elem.get_text(strip=True)
-                href = link_elem.get("href")
-                if href:
-                    # Convert relative URLs to absolute
-                    if href.startswith("/"):
-                        result_data["url"] = f"https://docs.unity3d.com{href}"
-                    else:
-                        result_data["url"] = href
-            else:
-                # If no link, use the element text as title
-                result_data["title"] = result_elem.get_text(strip=True)
-
-            # Extract description (if available)
-            desc_elem = result_elem.find(
-                ["p", "div"], class_=re.compile(r"desc|summary")
-            )
-            if desc_elem:
-                result_data["description"] = desc_elem.get_text(strip=True)
-
-            # Only return if we have at least a title
-            if result_data.get("title"):
-                return result_data
-
-        except Exception as e:
-            # Skip this result if parsing fails
-            pass
-
-        return None
 
     def _clean_trafilatura_content(self, content: str) -> str:
         """Clean up trafilatura content to fix code formatting issues."""

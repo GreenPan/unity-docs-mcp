@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "unity-docs": {
-      "command": "/Users/hiko/Desktop/unity-docs-mcp/venv/bin/python",
+      "command": "C:\\Users\\Red_13\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
       "args": ["-m", "unity_docs_mcp.server"],
-      "cwd": "/Users/hiko/Desktop/unity-docs-mcp",
+      "cwd": "C:\\Unity Projects\\unity-docs-mcp",
       "env": {
-        "PYTHONPATH": "/Users/hiko/Desktop/unity-docs-mcp/src"
+        "UNITY_HUB_EDITOR_DIR": "C:\\Program Files\\Unity\\Hub\\Editor"
       }
     }
   }

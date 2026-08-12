@@ -7,55 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Tool help (📋 Use:) in search results now displays for all classes, not just namespaced ones
-- Tool help now shows for properties and methods with correct parameter formatting
-- Improved search result usability by providing copy-paste ready MCP tool commands
+### Added
+- **Fully offline mode** — reads documentation bundled with locally installed Unity editors; no network requests
+- **`unity-docs-mcp start`** — two-step setup: locate the editor directory, build the SQLite FTS5 search index, then write MCP configs
+- **`unity-docs-mcp changesource`** — switch editor directory: rebuild index from the new location and refresh all configs
+- **SQLite FTS5 full-text index** — per-version persistent index (`~/.unity_docs_mcp/db/search_{version}.db`) over page bodies, not just titles/descriptions
+- **Manual handbook indexing** — the `Manual/` tree (~3,500 pages) is now indexed alongside the ScriptReference API reference (a `kind` column distinguishes `api` / `manual`)
+- **`get_unity_manual_doc` tool** — the 5th MCP tool: reads a Manual page by slug/title, or falls back to a Manual search
+- **Config writing for 6 AI tools** — Claude Desktop, Claude Code (`.mcp.json`), Cursor, VS Code (Copilot), OpenCode, and Codex
+- `UNITY_HUB_EDITOR_DIR` environment variable to point the server at the editor root
+- Local version resolution: prefix matching (`6000.5` → `6000.5.7f1`), uninstalled versions fall back to the newest installed with a note
 
 ### Changed
-- **Reduced test count from 166 to 80 tests**
-  - Streamlined test suite to focus on core functionality
-  - Maintained comprehensive coverage while improving test efficiency
-  - Improved CI/CD pipeline performance with reduced test count
-  - Removed edge case tests that don't add significant value
-  - Focused on core functionality and critical paths
-  - Maintained coverage of all major features
+- Search index backend: in-memory JS index + Python scoring → SQLite FTS5 with BM25
+- Version model: online supported-version list → locally installed full version dirs
+- **Uninstalled requested version now falls back** to the newest installed version
+  with a note (`6000.0 not installed; using 6000.5.7f1`) instead of erroring.
+  The server's only hard error is when no local docs exist at all.
+- **Improved member_type detection** — `Object.GetInstanceID` is now `method`,
+  `Object.transform` is `property`, `AI.NavMeshAgent` is `class` (based on whether
+  the dotted base is a known class), instead of over-classifying dotted members
+- `config.json` is now a manual-config reference (automatic setup uses `start`)
+- Dropped the `requests` dependency
 
-### Removed (Test Optimization)
-- **Removed edge case tests from test_parser.py** (9 tests removed)
-  - Malformed HTML handling tests
-  - Large document performance tests
-  - Special character edge cases
-  - Table structure preservation tests
-- **Removed edge case tests from test_version_features.py** (12 tests removed)
-  - Alpha, beta, RC version normalization tests
-  - Special character handling tests
-  - Whitespace handling tests
-  - Edge case format tests
-- **Removed redundant tests from test_cache.py** (12 tests removed)
-  - Kept only essential cache functionality tests
-  - Removed redundant cache directory creation tests
-  - Removed concurrent access edge cases
-- **Removed edge case tests from test_scraper.py** (22 tests removed)
-  - Network error variations
-  - Timeout handling variations
-  - Multiple format tests
-  - Fallback behavior tests
-- **Removed concurrent tests from test_integration.py** (7 tests removed)
-  - Stress tests with many concurrent requests
-  - Complex concurrent error scenarios
-- **Removed edge case tests from test_server.py** (5 tests removed)
-  - Missing parameter tests
-  - Parser error tests
-- **Removed edge case tests from test_search_index.py** (9 tests removed)
-  - Case sensitivity tests
-  - Common word handling tests
-  - Combined term search tests
+### Removed
+- All web scraping code paths (`requests` session, rate limiting, `docs.unity3d.com` URL building, online version detection)
+- The separate index-build command (build is embedded in `start` / `changesource`)
 
-### Improved
-- CI/CD pipeline now runs significantly faster with reduced test count
-- Test suite focuses on critical functionality and real-world scenarios
-- Maintained test coverage for all essential features
+### Fixed
+- Search results return local absolute paths instead of remote URLs
 
 ## [0.2.2] - 2025-06-20
 

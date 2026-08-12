@@ -102,39 +102,6 @@ public static Object Instantiate(Object original);
         self.assertIn("content", result)
         self.assertIn("No main content", result["content"])
 
-    def test_parse_search_results_success(self):
-        """Test successful search results parsing."""
-        result = self.parser.parse_search_results(self.sample_search_html)
-
-        self.assertIn("results", result)
-        self.assertIn("count", result)
-        # Count might be different based on HTML structure
-        self.assertGreaterEqual(result["count"], 2)
-
-        results = result["results"]
-        self.assertGreaterEqual(len(results), 2)
-
-        # Check that we have Transform and GameObject in results
-        titles = [r["title"] for r in results]
-        self.assertIn("Transform", titles)
-        self.assertIn("GameObject", titles)
-
-        # Check URLs are properly formatted
-        for result in results:
-            if result.get("url"):
-                self.assertTrue(
-                    "Transform.html" in result["url"]
-                    or "GameObject.html" in result["url"]
-                )
-
-    def test_parse_search_results_empty(self):
-        """Test parsing empty search results."""
-        html = "<html><body><div>No results found</div></body></html>"
-        result = self.parser.parse_search_results(html)
-
-        self.assertEqual(result["count"], 0)
-        self.assertEqual(len(result["results"]), 0)
-
     def test_extract_title_h1(self):
         """Test title extraction from h1 tag."""
         soup = BeautifulSoup(

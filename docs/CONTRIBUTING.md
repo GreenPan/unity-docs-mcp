@@ -160,48 +160,38 @@ For new features, please:
 
 ```
 src/unity_docs_mcp/
-├── server.py       # MCP server implementation - main entry point
-├── scraper.py      # Web scraping logic - handles HTTP requests
-├── parser.py       # HTML parsing and markdown conversion
-├── search_index.py # Local search index implementation
-└── __init__.py     # Package initialization
+├── server.py           # MCP server implementation - main entry point
+├── scraper.py          # Local documentation reader (offline)
+├── parser.py           # HTML parsing and markdown conversion
+├── search_index.py     # SQLite FTS5 search index
+├── version_resolver.py # Version discovery & resolution
+├── mcp_config.py       # Writes MCP configs for AI tools
+├── cli.py              # `start` / `changesource` commands
+└── __init__.py         # Package initialization
 ```
 
 ### Design Principles
 
 1. **Separation of concerns** - Each module has a clear responsibility
 2. **Error handling** - Graceful degradation and clear error messages
-3. **Rate limiting** - Respectful to Unity's servers
-4. **Testability** - All components should be easily testable
+3. **Fully offline** - read local Unity docs; never make network requests
+4. **Testability** - All components should be easily testable (via `tests/helpers.py`)
 5. **Extensibility** - Easy to add new Unity versions or features
 
-### Adding New Unity Versions
+### Adding Support for a New Unity Version
 
-To add support for a new Unity version:
+No code change is needed — versions are **discovered from the local install** at
+runtime by `version_resolver.discover_versions()`. Installing a new editor via
+Unity Hub is enough. To add a test, extend the fake install fixture:
 
-1. **Update `scraper.py`:**
-   ```python
-   def get_supported_versions(self) -> List[str]:
-       return [
-           "2024.1",  # Add new version here
-           "6000.0",
-           "2023.3",
-           # ... existing versions
-       ]
-   ```
+```python
+from tests.helpers import make_fake_unity_install
 
-2. **Test search index for new version:**
-   ```python
-   # Test that search index loads for new version
-   def test_search_index_new_version(self):
-       index = UnitySearchIndex()
-       self.assertTrue(index.load_index("2024.1"))
-   ```
-
-3. **Test the new version:**
-   ```python
-   # Add tests in test_scraper.py
-   def test_new_version_support(self):
+def test_new_version_discovered(self):
+    root, _ = make_fake_unity_install(self.tmp, ["6000.6.0f1"])
+    versions = discover_versions(root)
+    self.assertIn("6000.6.0f1", [v.name for v in versions])
+```
        self.assertTrue(self.scraper.validate_version("2024.1"))
    ```
 
@@ -225,11 +215,11 @@ When improving the HTML parser:
 
 When working on search functionality:
 
-1. **Download index.js** - Parse Unity's JavaScript search index
-2. **Implement ranking** - Score results based on relevance
-3. **Handle caching** - Cache index files with expiration
+1. **Build the FTS5 index** - Parse `docdata/index.json` (fallback: `index.js`)
+2. **Extract page bodies** - Parallel `get_text()` extraction for full-text search
+3. **Handle lazy builds** - `ensure_index` validates meta and builds only when needed
 4. **Test performance** - Ensure searches are fast (< 0.1s)
-5. **Support offline** - Search works after initial download
+5. **Stay offline** - index and query entirely from local disk
 
 ## Testing Guidelines
 
