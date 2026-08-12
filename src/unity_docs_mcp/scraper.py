@@ -7,8 +7,6 @@ env var > platform default Hub path.
 """
 
 import os
-import pickle
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from .search_index import UnitySearchIndex
@@ -31,10 +29,6 @@ class UnityDocScraper:
 
         # API availability cache (in-memory only; per-install docs are static).
         self._api_cache: Dict[str, Dict[str, List[str]]] = {}
-        self.cache_duration = timedelta(hours=6)
-        self.cache_dir = os.path.join(
-            os.path.expanduser("~"), ".unity_docs_mcp", "cache"
-        )
 
     # ------------------------------------------------------------------ setup
 

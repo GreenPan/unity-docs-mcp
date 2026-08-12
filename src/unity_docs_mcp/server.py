@@ -21,9 +21,11 @@ except ImportError:
 class UnityDocsMCPServer:
     """MCP Server for Unity documentation (local offline mode)."""
 
-    def __init__(self, editor_root=None):
+    def __init__(self, editor_root=None, scraper=None):
         self.server = Server("unity-docs-mcp")
-        self.scraper = UnityDocScraper(editor_root=editor_root or os.environ.get("UNITY_HUB_EDITOR_DIR"))
+        self.scraper = scraper or UnityDocScraper(
+            editor_root=editor_root or os.environ.get("UNITY_HUB_EDITOR_DIR")
+        )
         self.parser = UnityDocParser()
         self._setup_handlers()
 
@@ -43,16 +45,14 @@ class UnityDocsMCPServer:
                 "server config to your Unity Hub Editor directory."
             )
         resolved = self.scraper.resolve_version(version)
+        version_str = str(version).strip() if version else ""
         if resolved is None:
             # Requested version isn't installed -> serve the newest installed.
             fallback = self.scraper.resolve_version(None)
-            if version and str(version).strip():
-                annotation = f"{str(version).strip()} not installed; using {fallback.name}"
-            else:
-                annotation = None
+            annotation = f"{version_str} not installed; using {fallback.name}" if version_str else None
             return fallback, annotation, None
-        if version and str(version).strip() and str(version).strip().lower() != resolved.name.lower():
-            annotation = f"from {str(version).strip()}"
+        if version_str and version_str.lower() != resolved.name.lower():
+            annotation = f"from {version_str}"
         else:
             annotation = None
         return resolved, annotation, None
@@ -440,7 +440,7 @@ async def main():
     print("", file=sys.stderr)
 
     try:
-        server = UnityDocsMCPServer()
+        server = UnityDocsMCPServer(scraper=scraper)
         await server.run()
     except KeyboardInterrupt:
         print("🛑 Shutting down Unity Docs MCP Server...", file=sys.stderr)

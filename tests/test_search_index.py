@@ -27,8 +27,6 @@ class TestUnitySearchIndexInit(unittest.TestCase):
         index = UnitySearchIndex()
         self.assertEqual(index.docs_dirs, {})
         self.assertIsNone(index.default_version)
-        self.assertEqual(index.pages, [])
-        self.assertFalse(index._loaded)
 
     def test_default_version_picks_newest(self):
         tmp = tempfile.mkdtemp()

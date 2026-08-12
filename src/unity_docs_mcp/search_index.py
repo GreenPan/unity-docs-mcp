@@ -37,15 +37,6 @@ class UnitySearchIndex:
         self._loaded_versions = set()
         # Lazy sqlite connections per version.
         self._conns: Dict[str, sqlite3.Connection] = {}
-        self._build_lock = None
-
-        # Legacy attributes kept for API compatibility.
-        self.pages = []
-        self.page_info = []
-        self.search_index = {}
-        self.common_words = set()
-        self._loaded = False
-        self._memory_cache = {}
 
     # ------------------------------------------------------------------ paths
 
@@ -114,7 +105,9 @@ class UnitySearchIndex:
         if state == "valid":
             self._loaded_versions.add(version)
             return True
-        if state == "stale":
+        if state == "stale" and not force:
+            # Only warn when we rebuild unprompted (docs moved); a user-triggered
+            # `changesource --force` rebuild needs no hint.
             print(
                 f"警告: {version} 的文档索引与实际文档不一致，正在自动重建。"
                 "若经常发生，可运行 `unity-docs-mcp changesource` 明确重建。",
@@ -406,19 +399,19 @@ class UnitySearchIndex:
 
         conn = self._connect(version)
         if kind:
-            rows = conn.execute(
+            sql = (
                 "SELECT p.id, p.name, p.title, p.description, p.member_type, p.path, bm25(ft) "
                 "FROM ft JOIN pages p ON p.id = ft.rowid "
-                "WHERE ft MATCH ? AND p.kind = ? ORDER BY bm25(ft) LIMIT 500",
-                (match_query, kind),
-            ).fetchall()
+                "WHERE ft MATCH ? AND p.kind = ? ORDER BY bm25(ft) LIMIT 500"
+            )
+            rows = conn.execute(sql, (match_query, kind)).fetchall()
         else:
-            rows = conn.execute(
+            sql = (
                 "SELECT p.id, p.name, p.title, p.description, p.member_type, p.path, bm25(ft) "
                 "FROM ft JOIN pages p ON p.id = ft.rowid "
-                "WHERE ft MATCH ? ORDER BY bm25(ft) LIMIT 500",
-                (match_query,),
-            ).fetchall()
+                "WHERE ft MATCH ? ORDER BY bm25(ft) LIMIT 500"
+            )
+            rows = conn.execute(sql, (match_query,)).fetchall()
 
         q_lower = query.strip().lower()
         scored = []
@@ -501,22 +494,29 @@ class UnitySearchIndex:
         if not query:
             return None
         conn = self._connect(version)
-        row = conn.execute(
-            "SELECT name, title, path FROM pages WHERE kind = 'manual' "
-            "AND (LOWER(name) = ? OR LOWER(title) = ? "
-            "  OR LOWER(name) LIKE ? OR LOWER(title) LIKE ?) "
-            "ORDER BY CASE "
-            "  WHEN LOWER(name) = ? THEN 0 "
-            "  WHEN LOWER(title) = ? THEN 1 "
-            "  WHEN LOWER(name) LIKE ? THEN 2 "
-            "  ELSE 3 END "
-            "LIMIT 1",
-            (query, query, query + "%", query + "%",
-             query, query, query + "%"),
-        ).fetchone()
-        if row is None:
+        rows = conn.execute(
+            "SELECT name, title, path FROM pages WHERE kind = 'manual'",
+        ).fetchall()
+        best = None
+        best_rank = 4  # 0=exact name, 1=exact title, 2=name prefix, 3=title prefix
+        for row in rows:
+            name_l = row["name"].lower()
+            title_l = row["title"].lower()
+            if name_l == query:
+                rank = 0
+            elif title_l == query:
+                rank = 1
+            elif name_l.startswith(query):
+                rank = 2
+            elif title_l.startswith(query):
+                rank = 3
+            else:
+                continue
+            if rank < best_rank:
+                best, best_rank = row, rank
+        if best is None:
             return None
-        return row["name"], row["title"], row["path"]
+        return best["name"], best["title"], best["path"]
 
     def clear_cache(self, version: Optional[str] = None) -> None:
         """Delete the search database for one version or all versions."""
