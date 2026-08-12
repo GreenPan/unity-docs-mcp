@@ -6,6 +6,8 @@ Provides Unity documentation access directly in Claude — **fully offline**, re
 
 **⚠️ Disclaimer**: This is an unofficial community project. Unity Technologies is not affiliated with and does not endorse or support this project.
 
+> **Use case**: Tired of your agent scraping who-knows-how-many-hands-removed info from the web or communities? It's time to let it read the real, official documentation. With this MCP server installed, your AI assistant reads the official offline docs bundled with your local Unity editor — authoritative, exactly matching your engine version, and fully offline.
+
 [中文版 README](README_zh.md) · [日本語版 README](README_ja.md)
 
 ## How it works
